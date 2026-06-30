@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <sys/param.h>
 
 #include "esp_log.h"
 #include "esp_http_server.h"

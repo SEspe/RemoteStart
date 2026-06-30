@@ -232,7 +232,7 @@ static void wifi_init_and_connect(void)
 }
 
 /* ── ESP-NOW ────────────────────────────────────────────────────────────────── */
-static void espnow_send_cb(const uint8_t *mac, esp_now_send_status_t st)
+static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t st)
 {
     /* Silently discard; log if needed for debug */
 }
