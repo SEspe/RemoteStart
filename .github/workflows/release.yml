@@ -75,7 +75,7 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: ${{ env.IDF_VERSION }}
-          target: esp32
+          target: esp32c6
           path: SlaveWallas
           command: idf.py build
 
