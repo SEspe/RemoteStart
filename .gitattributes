@@ -1,0 +1,25 @@
+# Force LF line endings for all text files
+* text=auto eol=lf
+
+# Explicitly text — always LF
+*.c       text eol=lf
+*.h       text eol=lf
+*.cpp     text eol=lf
+*.ino     text eol=lf
+*.md      text eol=lf
+*.txt     text eol=lf
+*.yml     text eol=lf
+*.yaml    text eol=lf
+*.json    text eol=lf
+*.cmake   text eol=lf
+*.csv     text eol=lf
+CMakeLists.txt text eol=lf
+Makefile       text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# Binary — never touch
+*.bin     binary
+*.elf     binary
+*.hex     binary
+*.map     binary
