@@ -1,12 +1,15 @@
-name: Build & Release
+name: Build & Release (ESP-IDF)
 
 on:
   push:
     tags:
-      - 'v*'          # e.g. v1.0.0  → builds all three units
-      - 'master-v*'   # e.g. master-v1.1.0 → builds MasterHonda only
-      - 'honda-v*'    # e.g. honda-v1.0.1  → builds SlaveHonda only
-      - 'wallas-v*'   # e.g. wallas-v1.0.2 → builds SlaveWallas only
+      - 'v*'         # e.g. v1.0.0  → builds all three units
+      - 'master-v*'  # e.g. master-v1.1.0 → MasterHonda only
+      - 'honda-v*'   # e.g. honda-v1.0.1  → SlaveHonda only
+      - 'wallas-v*'  # e.g. wallas-v1.0.2 → SlaveWallas only
+
+env:
+  IDF_VERSION: v5.2.1   # pin ESP-IDF version
 
 jobs:
   build-master:
@@ -16,36 +19,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile MasterHonda
-        uses: arduino/compile-sketches@v1
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          fqbn: esp32:esp32:esp32
-          platforms: |
-            - name: esp32:esp32
-              source-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          sketch-paths: |
-            - MasterHonda
-          libraries: |
-            - name: WiFiManager
-            - name: ESPAsyncWebServer
-            - name: AsyncTCP
-            - name: ElegantOTA
-          enable-deltas-report: false
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32
+          path: MasterHonda
+          command: idf.py build
 
-      - name: Extract version
-        id: ver
+      - name: Extract version & rename bin
         run: |
-          VER=$(grep 'FIRMWARE_VERSION' MasterHonda/MasterHonda.ino | head -1 | grep -oP '"[^"]+"' | tr -d '"')
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Rename bin
-        run: |
-          find /home/runner -name '*.bin' | head -1 | xargs -I{} cp {} MasterHonda_v${{ steps.ver.outputs.version }}.bin
+          VER=$(grep 'FIRMWARE_VERSION' MasterHonda/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          cp MasterHonda/build/MasterHonda.bin MasterHonda_v${VER}.bin
+          echo "BIN=MasterHonda_v${VER}.bin" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
           name: MasterHonda
-          path: MasterHonda_v*.bin
+          path: ${{ env.BIN }}
 
   build-honda:
     name: Build SlaveHonda
@@ -54,35 +45,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile SlaveHonda
-        uses: arduino/compile-sketches@v1
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          fqbn: esp32:esp32:esp32
-          platforms: |
-            - name: esp32:esp32
-              source-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          sketch-paths: |
-            - SlaveHonda
-          libraries: |
-            - name: WiFiManager
-            - name: ESPAsyncWebServer
-            - name: AsyncTCP
-            - name: ElegantOTA
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32
+          path: SlaveHonda
+          command: idf.py build
 
-      - name: Extract version
-        id: ver
+      - name: Extract version & rename bin
         run: |
-          VER=$(grep 'FIRMWARE_VERSION' SlaveHonda/SlaveHonda.ino | head -1 | grep -oP '"[^"]+"' | tr -d '"')
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Rename bin
-        run: |
-          find /home/runner -name '*.bin' | head -1 | xargs -I{} cp {} SlaveHonda_v${{ steps.ver.outputs.version }}.bin
+          VER=$(grep 'FIRMWARE_VERSION' SlaveHonda/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          cp SlaveHonda/build/SlaveHonda.bin SlaveHonda_v${VER}.bin
+          echo "BIN=SlaveHonda_v${VER}.bin" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
           name: SlaveHonda
-          path: SlaveHonda_v*.bin
+          path: ${{ env.BIN }}
 
   build-wallas:
     name: Build SlaveWallas
@@ -91,35 +71,24 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Compile SlaveWallas
-        uses: arduino/compile-sketches@v1
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
         with:
-          fqbn: esp32:esp32:esp32
-          platforms: |
-            - name: esp32:esp32
-              source-url: https://raw.githubusercontent.com/espressif/arduino-esp32/gh-pages/package_esp32_index.json
-          sketch-paths: |
-            - SlaveWallas
-          libraries: |
-            - name: WiFiManager
-            - name: ESPAsyncWebServer
-            - name: AsyncTCP
-            - name: ElegantOTA
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32
+          path: SlaveWallas
+          command: idf.py build
 
-      - name: Extract version
-        id: ver
+      - name: Extract version & rename bin
         run: |
-          VER=$(grep 'FIRMWARE_VERSION' SlaveWallas/SlaveWallas.ino | head -1 | grep -oP '"[^"]+"' | tr -d '"')
-          echo "version=$VER" >> "$GITHUB_OUTPUT"
-
-      - name: Rename bin
-        run: |
-          find /home/runner -name '*.bin' | head -1 | xargs -I{} cp {} SlaveWallas_v${{ steps.ver.outputs.version }}.bin
+          VER=$(grep 'FIRMWARE_VERSION' SlaveWallas/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          cp SlaveWallas/build/SlaveWallas.bin SlaveWallas_v${VER}.bin
+          echo "BIN=SlaveWallas_v${VER}.bin" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
           name: SlaveWallas
-          path: SlaveWallas_v*.bin
+          path: ${{ env.BIN }}
 
   release:
     name: Create GitHub Release
@@ -134,9 +103,6 @@ jobs:
           path: artifacts
           merge-multiple: true
 
-      - name: List artifacts
-        run: ls -la artifacts/
-
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
@@ -144,15 +110,20 @@ jobs:
           name: Release ${{ github.ref_name }}
           body: |
             ## Firmware Release ${{ github.ref_name }}
+            Built with ESP-IDF ${{ env.IDF_VERSION }} for ESP32.
 
-            ### Flashing via OTA
-            1. Open the device web UI → OTA Update tab
-            2. Upload the appropriate `.bin` file for each unit
+            ### Flash via OTA
+            1. Open device web UI → **OTA Update** tab
+            2. Select the `.bin` file for that unit
+            3. Click **Upload & Flash**
 
-            ### Flashing via USB (first time)
-            Use Arduino IDE or esptool.py with the `.bin` file.
-
-            ### Version info
-            Each bin file contains the `FIRMWARE_VERSION` string visible in the web UI header.
+            ### Flash via USB (first time)
+            ```
+            idf.py -p COMx flash
+            ```
+            or with esptool:
+            ```
+            esptool.py --chip esp32 -p COMx write_flash 0x10000 <name>.bin
+            ```
           files: artifacts/*.bin
           fail_on_unmatched_files: false
