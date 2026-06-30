@@ -1,8 +1,9 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.0  
+**Version:** 1.1  
 **Author:** Stein Espe  
-**Date:** 2026-06-30
+**Date:** 2026-06-30  
+**Changelog:** v1.1 — Converted firmware framework from Arduino to ESP-IDF v5
 
 ---
 
@@ -19,54 +20,56 @@ Three ESP32 microcontrollers communicate over the **ESP-NOW** peer-to-peer proto
                             Web UI / OTA
 ```
 
+**Development framework:** ESP-IDF v5 (native Espressif SDK). No Arduino framework or third-party libraries are used.
+
 ---
 
 ## 2. Hardware
 
 ### 2.1 Units
 
-| Unit         | MCU    | Role              | Custom MAC              |
-|--------------|--------|-------------------|-------------------------|
-| MasterHonda  | ESP32  | Master controller | 30:AE:A4:89:92:7A       |
-| SlaveHonda   | ESP32  | Honda generator   | 30:AE:A4:1A:AE:33       |
-| SlaveWallas  | ESP32  | Wallas heater     | 30:AE:A4:1A:AE:30       |
+| Unit         | MCU   | Role              | Custom MAC        |
+|--------------|-------|-------------------|-------------------|
+| MasterHonda  | ESP32 | Master controller | 30:AE:A4:89:92:7A |
+| SlaveHonda   | ESP32 | Honda generator   | 30:AE:A4:1A:AE:33 |
+| SlaveWallas  | ESP32 | Wallas heater     | 30:AE:A4:1A:AE:30 |
 
-Custom MAC addresses are set at startup via `esp_wifi_set_mac()` so that hardware can be replaced without re-programming the peers.
+Custom MAC addresses are applied at startup via `esp_wifi_set_mac()` before `esp_wifi_start()`, so hardware modules can be replaced without updating peer tables in other units.
 
 ### 2.2 MasterHonda Pin Assignments
 
-| Pin | Direction | Signal                              |
-|-----|-----------|-------------------------------------|
-|  2  | OUTPUT    | Onboard LED — heartbeat blink       |
-|  4  | INPUT     | Wallas Start — Victron Venus relay  |
-|  5  | INPUT_PU  | Wallas Manual Start (push-button)   |
-| 13  | OUTPUT    | Honda Running Feedback LED          |
-| 14  | INPUT_PU  | Honda Manual Start (push-button)    |
-| 15  | INPUT     | Honda Start — Victron Venus relay   |
+| GPIO | Direction    | Signal                             |
+|------|--------------|------------------------------------|
+|  2   | OUTPUT       | Onboard LED — heartbeat blink      |
+|  4   | INPUT        | Wallas Start — Victron Venus relay |
+|  5   | INPUT PULLUP | Wallas Manual Start (push-button)  |
+| 13   | OUTPUT       | Honda Running Feedback LED         |
+| 14   | INPUT PULLUP | Honda Manual Start (push-button)   |
+| 15   | INPUT        | Honda Start — Victron Venus relay  |
 
 ### 2.3 SlaveHonda Pin Assignments
 
-| Pin | Direction | Signal                                       |
-|-----|-----------|----------------------------------------------|
-|  2  | OUTPUT    | Onboard LED — heartbeat blink                |
-|  4  | OUTPUT    | External status LED                          |
-| 13  | OUTPUT    | Starter relay (active LOW = crank)           |
-| 14  | OUTPUT    | Ignition relay (active LOW = ignition ON)    |
-| 15  | INPUT     | Running feedback (LOW = engine running)      |
+| GPIO | Direction | Signal                                    |
+|------|-----------|-------------------------------------------|
+|  2   | OUTPUT    | Onboard LED — heartbeat blink             |
+|  4   | OUTPUT    | External status LED                       |
+| 13   | OUTPUT    | Starter relay (active LOW = crank ON)     |
+| 14   | OUTPUT    | Ignition relay (active LOW = ignition ON) |
+| 15   | INPUT     | Running feedback (LOW = engine running)   |
 
-**Start sequence timing:**
-1. Ignition relay ON → 10 s warm-up
-2. Starter relay ON → 3 s crank
+**Honda start sequence timing:**
+1. Ignition relay ON (LOW) → 10 s warm-up
+2. Starter relay ON (LOW) → 3 s crank
 3. Starter relay OFF → 1 s settle
-4. Check running feedback pin
+4. Read running feedback pin to confirm engine state
 
 ### 2.4 SlaveWallas Pin Assignments
 
-| Pin | Direction | Signal                                  |
-|-----|-----------|------------------------------------------|
-|  0  | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
-|  2  | OUTPUT    | Onboard LED (fast blink when running)    |
-| 13  | INPUT     | Wallas running feedback (HIGH = running) |
+| GPIO | Direction | Signal                                   |
+|------|-----------|------------------------------------------|
+|  0   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
+|  2   | OUTPUT    | Onboard LED (fast blink when running)    |
+| 13   | INPUT     | Wallas running feedback (HIGH = running) |
 
 ---
 
@@ -74,150 +77,246 @@ Custom MAC addresses are set at startup via `esp_wifi_set_mac()` so that hardwar
 
 ### 3.1 ESP-NOW
 
-- **Protocol:** IEEE 802.11 ESP-NOW peer-to-peer, no router required for control messages.
-- **Channel:** Dynamically matched to the connected WiFi AP channel (all three units must connect to the same WiFi network).
-- **Encryption:** Disabled (controlled private network; enable `peer.encrypt = true` for production hardening).
+- **Protocol:** IEEE 802.11 ESP-NOW peer-to-peer; uses `esp_now.h` from ESP-IDF.
+- **Channel:** Set to `0` when adding peers (`esp_now_peer_info_t.channel = 0`), which instructs the driver to use the current WiFi STA channel automatically. All three units must connect to the same WiFi router to share a channel.
+- **Encryption:** Disabled (`peer.encrypt = false`). Enable per-peer AES encryption via `esp_now_peer_info_t.encrypt = true` and supply a 16-byte LMK for production hardening.
+- **Receive callback API:** Uses the ESP-IDF v5 signature:
+  ```c
+  void espnow_recv_cb(const esp_now_recv_info_t *info,
+                      const uint8_t *data, int len);
+  ```
 
 ### 3.2 Message Structures
 
-All structures must be identical on sender and receiver.
+Structures are defined identically in each unit's `main.c`. Packing is implicit (all `bool` fields; no padding issues on ESP32).
 
-#### Master → Slave (MasterMsg)
+#### Master → Slave (`master_msg_t`)
 ```c
 typedef struct {
-  char  a[32];          // Label string
-  bool  HondaRunningFB; // Echo of running status
-  bool  HondaIgnitionOn;// Ignition on flag
-  bool  HondaStart;     // Command: true = start, false = stop
-                        //  (also carries WallasStart for SlaveWallas)
-} MasterMsg;
+    char  label[32];
+    bool  HondaRunningFB;   // echo of running status
+    bool  HondaIgnitionOn;  // ignition state
+    bool  HondaStart;       // command: true = start, false = stop
+                            // (doubles as WallasStart for SlaveWallas)
+} master_msg_t;
 ```
 
-#### SlaveHonda → Master (SlaveMsg)
+#### SlaveHonda → Master (`slave_msg_t`)
 ```c
 typedef struct {
-  char  a[32];
-  bool  HondaIgnitionOn;
-  bool  HondaStarting;
-  bool  HondaRunning;
-} SlaveMsg;
+    char  label[32];
+    bool  HondaIgnitionOn;
+    bool  HondaStarting;
+    bool  HondaRunning;
+} slave_msg_t;
 ```
 
-#### SlaveWallas → Master (SlaveWallasMsg)
+#### SlaveWallas → Master (`slave_wallas_msg_t`)
 ```c
 typedef struct {
-  char  a[32];
-  bool  WallasRunning;
-  bool  WallasStart;
-} SlaveWallasMsg;
+    char  label[32];
+    bool  WallasRunning;
+    bool  WallasStart;
+} slave_wallas_msg_t;
 ```
 
 ### 3.3 Timing
 
-| Parameter                | Value  | Description                              |
-|--------------------------|--------|------------------------------------------|
-| Honda restart block      | 30 s   | Minimum interval between Honda sends     |
-| Wallas send interval     | 15 s   | Periodic Wallas command refresh          |
-| SlaveHonda status period | 10 s   | Slave → Master heartbeat                 |
-| SlaveWallas status period| 10 s   | Slave → Master heartbeat                 |
-| Honda ignition warm-up   | 10 s   | Delay between ignition ON and cranking   |
-| Honda crank time         | 3 s    | Duration of starter motor activation     |
+| Parameter                 | Value | Description                           |
+|---------------------------|-------|---------------------------------------|
+| Honda restart block       | 30 s  | Minimum interval between Honda sends  |
+| Wallas send interval      | 15 s  | Periodic Wallas command refresh       |
+| SlaveHonda status period  | 10 s  | Slave → Master heartbeat              |
+| SlaveWallas status period | 10 s  | Slave → Master heartbeat              |
+| Honda ignition warm-up    | 10 s  | Delay between ignition ON and crank   |
+| Honda crank time          | 3 s   | Duration of starter relay activation  |
 
 ---
 
 ## 4. WiFi Configuration (First Startup)
 
-All three units use **WiFiManager** (by tzapu) to collect WiFi credentials on first power-up. Credentials are stored in non-volatile flash and used automatically on subsequent boots.
+On first power-up, each unit detects that no WiFi credentials are stored in NVS and opens a SoftAP captive portal implemented directly in `main.c` using `esp_wifi` and `esp_http_server`. No external WiFiManager library is used.
 
 ### Procedure for each unit
 
-1. Power on the unit (fresh / factory firmware).
-2. The unit opens a configuration access point:
+1. Power on the unit (fresh flash or after NVS erase).
+2. The unit starts a WiFi access point:
 
-   | Unit         | AP Name                | Password    |
-   |--------------|------------------------|-------------|
-   | MasterHonda  | `MasterHonda-Config`   | `honda1234` |
-   | SlaveHonda   | `SlaveHonda-Config`    | `honda1234` |
-   | SlaveWallas  | `SlaveWallas-Config`   | `honda1234` |
+   | Unit         | AP Name              | Password    |
+   |--------------|----------------------|-------------|
+   | MasterHonda  | `MasterHonda-Config` | `honda1234` |
+   | SlaveHonda   | `SlaveHonda-Config`  | `honda1234` |
+   | SlaveWallas  | `SlaveWallas-Config` | `honda1234` |
 
 3. Connect a smartphone or laptop to that AP.
-4. A captive portal opens automatically (or navigate to `192.168.4.1`).
-5. Select the home/vessel WiFi network and enter the password.
-6. The unit saves credentials and reboots, connecting to the router.
-7. The unit's IP address is printed on the Serial monitor (115200 baud).
+4. Navigate to `http://192.168.4.1/wifi-setup`.
+5. Enter the home/vessel WiFi SSID and password and submit the form.
+6. Credentials are written to NVS (`esp_err_t nvs_set_str()`), and the unit reboots.
+7. On subsequent boots the unit reads credentials from NVS and connects directly in STA mode.
 
-> **Important:** All three units must connect to the **same** WiFi network so they share a channel for ESP-NOW communication.
+> **Important:** All three units must connect to the **same** WiFi network so they share a channel for ESP-NOW.
 
-### Portal timeout
+### Portal implementation
 
-If no configuration is entered within **3 minutes**, the unit restarts and opens the portal again.
+The portal is served by `web_server.c`:
+
+- `GET /wifi-setup` — HTML credential form
+- `POST /wifi-save` — URL-encoded body parsed, SSID/password written to NVS, unit restarts
 
 ### Resetting WiFi credentials
 
-Call `WiFiManager::resetSettings()` in code (e.g., triggered by long-press on a button) or erase NVS via: `esptool.py erase_region 0x9000 0x6000`.
+Erase only the NVS partition (preserves firmware):
+```
+esptool.py -p COMx erase_region 0x9000 0x5000
+```
+Or erase the full flash and re-flash:
+```
+idf.py -p COMx erase-flash flash
+```
 
 ---
 
-## 5. Web Interface
+## 5. Project Structure
 
-### 5.1 MasterHonda — Three Tabs
+Each unit is an independent ESP-IDF project:
+
+```
+<Unit>/
+├── CMakeLists.txt          ← top-level project file (idf.py entry point)
+├── partitions.csv          ← dual OTA + NVS partition table
+├── sdkconfig.defaults      ← project-level Kconfig overrides
+└── main/
+    ├── CMakeLists.txt      ← component registration + REQUIRES list
+    ├── version.h           ← FIRMWARE_VERSION, FIRMWARE_NAME, AP name, NVS namespace
+    ├── main.c              ← app_main, WiFi, ESP-NOW, GPIO, FreeRTOS tasks
+    ├── web_server.c        ← HTTP server, status API, OTA upload handler, portal
+    └── web_server.h
+```
+
+### Partition table (`partitions.csv`)
+
+```
+# Name,   Type, SubType, Offset,   Size
+nvs,      data, nvs,     0x9000,   0x5000
+otadata,  data, ota,     0xe000,   0x2000
+app0,     app,  ota_0,   0x10000,  0x1E0000
+app1,     app,  ota_1,   0x1F0000, 0x1E0000
+```
+
+Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embedded HTML. `otadata` tracks which partition is the active boot target.
+
+### ESP-IDF components used
+
+| ESP-IDF component  | Purpose                                   |
+|--------------------|-------------------------------------------|
+| `esp_wifi`         | WiFi STA / SoftAP, custom MAC             |
+| `esp_event`        | Default event loop for WiFi/IP events     |
+| `esp_netif`        | Network interface (STA + AP)              |
+| `esp_now`          | Peer-to-peer messaging                    |
+| `nvs_flash` / `nvs`| Non-volatile storage of WiFi credentials  |
+| `driver` (gpio)    | GPIO configuration, levels, ISR service   |
+| `esp_http_server`  | Synchronous HTTP server                   |
+| `esp_ota_ops`      | OTA write, partition selection, reboot    |
+| `app_update`       | `esp_ota_get_next_update_partition()`     |
+| `esp_timer`        | Microsecond timestamps for timing logic   |
+| `freertos`         | Tasks, event groups, delays               |
+
+---
+
+## 6. Web Interface
+
+All HTML is embedded as `const char[]` string literals in `web_server.c`. No filesystem (SPIFFS/LittleFS) is required.
+
+### 6.1 MasterHonda — Three Tabs
 
 Access at: `http://<MasterHonda-IP>/`
 
-| Tab          | Content                                                       | Refresh  |
-|--------------|---------------------------------------------------------------|----------|
-| Pin Status   | Live state of all 5 input/output pins + 3 global state flags | 2 s auto |
-| Clients      | SlaveHonda and SlaveWallas last-seen, running status, flags   | 2 s auto |
-| OTA Update   | ElegantOTA upload page embedded in iframe                     | Manual   |
+| Tab        | Content                                                      | Refresh  |
+|------------|--------------------------------------------------------------|----------|
+| Pin Status | Live state of 5 pins + 3 global state flags                  | 2 s auto |
+| Clients    | SlaveHonda and SlaveWallas last-seen time, running status     | 2 s auto |
+| OTA Update | File input + XHR upload to `/ota/upload`                     | Manual   |
 
-JSON API endpoints:
-- `GET /api/status` — pin and global state JSON
-- `GET /api/clients` — slave status JSON
-- `GET /update` — ElegantOTA page (also used by OTA tab iframe)
+HTTP endpoints:
 
-### 5.2 SlaveHonda & SlaveWallas — Two Tabs
+| Method | Path           | Description                            |
+|--------|----------------|----------------------------------------|
+| GET    | `/`            | Main dashboard HTML                    |
+| GET    | `/api/status`  | JSON: pin levels and global state      |
+| GET    | `/api/clients` | JSON: slave last-seen and status       |
+| GET    | `/wifi-setup`  | WiFi credential form (portal only)     |
+| POST   | `/wifi-save`   | Save credentials to NVS, restart       |
+| POST   | `/ota/upload`  | Raw binary OTA upload                  |
+
+### 6.2 SlaveHonda & SlaveWallas — Two Tabs
 
 Access at: `http://<Slave-IP>/`
 
-| Tab        | Content                                                 | Refresh  |
-|------------|---------------------------------------------------------|----------|
-| Status     | Relay states, running feedback, last received command   | 2 s auto |
-| OTA Update | ElegantOTA upload page embedded in iframe               | Manual   |
+| Tab        | Content                                               | Refresh  |
+|------------|-------------------------------------------------------|----------|
+| Status     | Relay states, running feedback, last received command | 2 s auto |
+| OTA Update | File input + XHR upload to `/ota/upload`              | Manual   |
 
-JSON API endpoint:
-- `GET /api/status` — pin and state JSON
+HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/wifi-save`, `/ota/upload`.
+
+### 6.3 Status JSON format
+
+`GET /api/status` on MasterHonda returns:
+```json
+{
+  "pHS": false,   "pHM": false,   "pWS": false,
+  "pWM": false,   "pFB": false,
+  "gHS": false,   "gHR": false,   "gWS": false
+}
+```
+Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running.
 
 ---
 
-## 6. OTA Update Procedure
+## 7. OTA Update Procedure
 
-1. Compile the firmware in Arduino IDE for the target board (**ESP32**).
-2. Export compiled binary: *Sketch → Export Compiled Binary* → produces `<name>.ino.bin`.
-3. Open the web UI for the unit and navigate to the **OTA Update** tab.
-4. Click "Choose File", select the `.bin` file.
-5. Click "Update". The device flashes the new firmware and reboots automatically.
-6. Verify the new version appears in the page header.
+The OTA handler in `web_server.c` uses `esp_ota_ops.h` with streaming writes:
+
+```c
+esp_ota_begin(partition, OTA_WITH_SEQUENTIAL_WRITES, &handle);
+// stream 1 KB chunks from HTTP body
+esp_ota_write(handle, buf, len);
+esp_ota_end(handle);
+esp_ota_set_boot_partition(partition);
+esp_restart();
+```
+
+### Steps
+
+1. Build the firmware: `cd <Unit> && idf.py build`
+2. Locate the binary: `<Unit>/build/<Unit>.bin`
+3. Open `http://<device-ip>/` → **OTA Update** tab.
+4. Click **Choose File**, select the `.bin`.
+5. Click **Upload & Flash**. Progress is shown as a percentage.
+6. The device reboots automatically. The new version appears in the page header.
+
+> The upload uses a JavaScript `XMLHttpRequest` with `Content-Type: application/octet-stream`. The server reads the raw binary body in 1 KB chunks — no multipart parsing needed.
 
 ---
 
-## 7. Versioning & Release Artifacts
+## 8. Versioning & Release Artifacts
 
-Each unit has an **independent** firmware version defined in its source file:
+Each unit's version is defined independently in `main/version.h`:
 
 ```c
 #define FIRMWARE_VERSION  "1.0.0"
-#define FIRMWARE_NAME     "MasterHonda"   // or SlaveHonda / SlaveWallas
+#define FIRMWARE_NAME     "MasterHonda"   // SlaveHonda / SlaveWallas
 ```
 
 ### Version scheme: `MAJOR.MINOR.PATCH`
 
-| Change type           | Bump        |
-|-----------------------|-------------|
-| Breaking change       | MAJOR       |
-| New feature           | MINOR       |
-| Bug fix               | PATCH       |
+| Change type    | Bump  |
+|----------------|-------|
+| Breaking change | MAJOR |
+| New feature     | MINOR |
+| Bug fix         | PATCH |
 
-### Release bin file naming convention
+### Release bin naming
 
 ```
 MasterHonda_v1.0.0.bin
@@ -225,66 +324,102 @@ SlaveHonda_v1.0.0.bin
 SlaveWallas_v1.0.0.bin
 ```
 
-Each release tag in the GitHub repository contains all three bin files as individual assets, allowing each unit to be updated independently.
+### GitHub Actions CI/CD
+
+Pushing a version tag triggers `.github/workflows/release.yml`, which builds affected units using `espressif/esp-idf-ci-action@v1` (ESP-IDF v5.2.1) and attaches the `.bin` files to a GitHub Release.
+
+| Tag pattern  | Units built                      |
+|--------------|----------------------------------|
+| `v*`         | All three                        |
+| `master-v*`  | MasterHonda only                 |
+| `honda-v*`   | SlaveHonda only                  |
+| `wallas-v*`  | SlaveWallas only                 |
+
+First flash must be done via USB. OTA handles all subsequent updates.
 
 ---
 
-## 8. Startup Sequence (all units)
+## 9. Startup Sequence (all units)
 
 ```
-Power on
+app_main()
   │
-  ├─ Set custom MAC
+  ├─ nvs_flash_init()
   │
-  ├─ WiFiManager::autoConnect()
-  │     ├─ Saved credentials? → Connect directly
-  │     └─ No credentials? → Open config AP (3 min timeout → restart)
+  ├─ gpio_init()          — configure outputs (relays off) and inputs
   │
-  ├─ esp_now_init()
+  ├─ wifi_init_and_connect()
+  │     ├─ esp_wifi_set_mac()   — apply custom MAC
+  │     ├─ NVS has credentials?
+  │     │     YES → esp_wifi_start() → wait for IP (15 s)
+  │     │             connected? → web_server_start() → return
+  │     │             failed?   → fall through to portal
+  │     └─ NO / failed → start_config_portal()
+  │                         esp_wifi AP mode
+  │                         web_server_start()   (serves /wifi-setup)
+  │                         wait for POST /wifi-save
+  │                         nvs_set_str() → esp_restart()
   │
-  ├─ Register ESP-NOW callbacks
+  ├─ espnow_init()
+  │     ├─ esp_now_init()
+  │     ├─ esp_now_register_recv_cb()
+  │     └─ esp_now_add_peer()   (channel = 0)
   │
-  ├─ Add peers (channel 0 = current WiFi channel)
+  ├─ xTaskCreate(master_task / status_task / heartbeat_task)
   │
-  ├─ Configure GPIO pins
-  │
-  ├─ ElegantOTA.begin()
-  │
-  └─ webServer.begin()  →  [Main Loop]
+  └─ [FreeRTOS scheduler runs tasks]
 ```
 
 ---
 
-## 9. Error Handling & Recovery
+## 10. Error Handling & Recovery
 
-| Condition                  | Behaviour                                     |
-|----------------------------|-----------------------------------------------|
-| WiFi config portal timeout | `ESP.restart()` — opens portal again          |
-| ESP-NOW init failure       | `ESP.restart()`                               |
-| Peer add failure           | Log warning, continue (ESP-NOW still receives)|
-| Honda: no running feedback | One crank attempt; slave reports `Running=false` to master |
-| Master: no slave response  | Status shows "Never" in Clients tab; control still sends |
-
----
-
-## 10. Library Dependencies
-
-Install all via Arduino IDE **Library Manager** (Tools → Manage Libraries):
-
-| Library            | Author              | Purpose                        |
-|--------------------|---------------------|--------------------------------|
-| WiFiManager        | tzapu               | Captive portal WiFi setup      |
-| ESPAsyncWebServer  | lacamera            | Async HTTP server              |
-| AsyncTCP           | dvarrel             | Dependency of ESPAsyncWebServer|
-| ElegantOTA         | Ayush Sharma (v3.x) | Web-based OTA update page      |
-
-Board: **esp32** by Espressif Systems (install via Boards Manager).
+| Condition                   | Behaviour                                               |
+|-----------------------------|---------------------------------------------------------|
+| No NVS credentials on boot  | SoftAP portal opened; restarts after credentials saved  |
+| WiFi connect timeout (15 s) | Portal opened                                           |
+| ESP-NOW init failure        | `esp_restart()`                                         |
+| Peer add failure            | `ESP_LOGE` log, execution continues                     |
+| OTA write error             | `esp_ota_abort()`, HTTP 500 returned, no reboot         |
+| Honda: no running feedback  | Slave reports `HondaRunning = false`; master may retry after 30 s block |
+| Master: no slave heartbeat  | Clients tab shows elapsed time; control messages still sent |
+| SlaveHonda blocking start   | Web server unresponsive for ~14 s during ignition warm-up + crank; expected behaviour |
 
 ---
 
-## 11. Known Limitations
+## 11. Build & Flash Reference
 
-- ESP-NOW channel must match the WiFi router channel. If the router changes channel (rare), restart all units.
-- During OTA upload (~30 s), ESP-NOW messages are not processed.
-- `SlaveHonda` blocking start sequence (ignition warm-up + crank = ~14 s) prevents web server response during that window — this is expected.
-- The `HondaStart` field in `MasterMsg` carries the Wallas command to `SlaveWallas` (reuse of existing struct). A future version should use a dedicated Wallas message structure.
+### Prerequisites
+
+- ESP-IDF v5.x installed and sourced (`idf.py` on PATH)
+- ESP32 board connected via USB
+
+### Commands
+
+```bash
+# Build
+cd MasterHonda          # or SlaveHonda / SlaveWallas
+idf.py build
+
+# First flash via USB
+idf.py -p COM7 flash monitor
+
+# Erase NVS (reset WiFi credentials, keep firmware)
+esptool.py -p COM7 erase_region 0x9000 0x5000
+
+# Full erase + reflash
+idf.py -p COM7 erase-flash flash monitor
+```
+
+### IDE
+
+Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). The extension detects `CMakeLists.txt` automatically. Use the status bar buttons to select port, build, and flash.
+
+---
+
+## 12. Known Limitations
+
+- ESP-NOW channel is derived from the connected WiFi AP. If the router changes channel (unusual), all three units must be restarted to re-sync.
+- `HondaStart` in `master_msg_t` carries the Wallas command to `SlaveWallas` (struct reuse from the original design). A future version should introduce a dedicated `wallas_cmd_t` message.
+- During OTA upload (~10–30 s depending on file size), the HTTP server task is busy; ESP-NOW receive callbacks still fire but any response sends from that task are deferred.
+- The SoftAP portal does not scan and list nearby networks. The SSID must be entered manually.
