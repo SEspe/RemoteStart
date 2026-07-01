@@ -1,7 +1,7 @@
 /*
  * MasterHonda web_server.c
- * Serves: WiFi setup portal, pin status API, clients API, OTA upload.
- * Three-tab UI: Pin Status | Clients | OTA Update
+ * Serves: WiFi setup portal, pin status API, nodes API, OTA upload.
+ * Three-tab UI: Pin Status | Nodes | OTA Update
  */
 
 #include <stdio.h>
@@ -21,13 +21,26 @@
 
 static const char *TAG = "web";
 
+#define NODE_TIMEOUT_MS  30000   /* must match main.c — see FSD §3.4 */
+
 /* ── Shared state from main.c ──────────────────────────────────────────────── */
 extern volatile bool g_honda_start_cmd;
 extern volatile bool g_wallas_start_cmd;
 extern          bool g_slave_honda_running;
 
-typedef struct { int64_t last_seen_us; bool honda_ign_on; bool honda_starting;
-                 bool honda_running; bool wallas_running; bool wallas_start_cmd; } slave_info_t;
+/* Layout must match main.c's slave_info_t exactly (shared via extern, not a header). */
+typedef struct {
+    uint8_t  mac[6];
+    bool     peer_added;
+    char     ip[16];
+    bool     has_wifi;
+    int64_t  last_seen_us;
+    bool     honda_ign_on;
+    bool     honda_starting;
+    bool     honda_running;
+    bool     wallas_running;
+    bool     wallas_start_cmd;
+} slave_info_t;
 extern slave_info_t g_slave_honda;
 extern slave_info_t g_slave_wallas;
 
@@ -140,14 +153,14 @@ static const char INDEX_HTML_TMPL[] =
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Pin Status</button>"
-"<button class='tab' onclick='show(\"clients\",this)'>Clients</button>"
+"<button class='tab' onclick='show(\"nodes\",this)'>Nodes</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Input Pins</h3><div class='grid' id='pins'>…</div></div>"
 "<div class='card'><h3>System State</h3><div class='grid' id='state'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
-"<div id='clients' class='pane'>"
+"<div id='nodes' class='pane'>"
 "<div id='cli'>…</div><div class='ts' id='cts'></div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
@@ -175,20 +188,23 @@ static const char INDEX_HTML_TMPL[] =
 "row('Honda Start CMD',d.gHS)+row('Honda Slave Running',d.gHR)+row('Wallas CMD',d.gWS);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
-"function fetchClients(){"
-"fetch('/api/clients').then(r=>r.json()).then(d=>{"
+"function nodeHdr(n){"
+"return '<div class=\"cn\">'+n.role+' <span class=\"'+(n.connected?'ok':'dim')+'\">'+"
+"(n.connected?'\\u25CF connected':'\\u25CB disconnected')+'</span></div>'+"
+"'<div class=\"cr\"><span>MAC</span><span>'+(n.mac||'\\u2014 not yet registered')+'</span></div>'+"
+"'<div class=\"cr\"><span>IP</span><span>'+(n.ip||'\\u2014')+'</span></div>'+"
+"'<div class=\"cr\"><span>WiFi</span><span class=\"'+(n.has_wifi?'ok':'dim')+'\">'+(n.has_wifi?'Yes':'No (ESP-NOW only)')+'</span></div>'+"
+"'<div class=\"cr\"><span>Last seen</span><span>'+n.ls+'</span></div>';}"
+"function fetchNodes(){"
+"fetch('/api/nodes').then(r=>r.json()).then(d=>{"
 "let h='';"
-"h+='<div class=\"cli\"><div class=\"cn\">SlaveHonda "
-"<span style=\"font-weight:normal;color:#666;font-size:.72rem\">30:AE:A4:1A:AE:33</span></div>';"
-"h+='<div class=\"cr\"><span>Last seen</span><span>'+d.h.ls+'</span></div>';"
-"h+='<div class=\"cr\"><span>Ignition On</span><span class=\"'+(d.h.ig?'ok':'dim')+'\">'+(d.h.ig?'YES':'No')+'</span></div>';"
-"h+='<div class=\"cr\"><span>Starting</span><span class=\"'+(d.h.st?'ok':'dim')+'\">'+(d.h.st?'YES':'No')+'</span></div>';"
-"h+='<div class=\"cr\"><span>Running</span><span class=\"'+(d.h.ru?'ok':'dim')+'\">'+(d.h.ru?'YES':'No')+'</span></div></div>';"
-"h+='<div class=\"cli\"><div class=\"cn\">SlaveWallas "
-"<span style=\"font-weight:normal;color:#666;font-size:.72rem\">30:AE:A4:1A:AE:30</span></div>';"
-"h+='<div class=\"cr\"><span>Last seen</span><span>'+d.w.ls+'</span></div>';"
-"h+='<div class=\"cr\"><span>Running</span><span class=\"'+(d.w.ru?'ok':'dim')+'\">'+(d.w.ru?'YES':'No')+'</span></div>';"
-"h+='<div class=\"cr\"><span>Start CMD</span><span class=\"'+(d.w.sc?'ok':'dim')+'\">'+(d.w.sc?'YES':'No')+'</span></div></div>';"
+"h+='<div class=\"cli\">'+nodeHdr(d.h)+"
+"'<div class=\"cr\"><span>Ignition On</span><span class=\"'+(d.h.ig?'ok':'dim')+'\">'+(d.h.ig?'YES':'No')+'</span></div>'+"
+"'<div class=\"cr\"><span>Starting</span><span class=\"'+(d.h.st?'ok':'dim')+'\">'+(d.h.st?'YES':'No')+'</span></div>'+"
+"'<div class=\"cr\"><span>Running</span><span class=\"'+(d.h.ru?'ok':'dim')+'\">'+(d.h.ru?'YES':'No')+'</span></div></div>';"
+"h+='<div class=\"cli\">'+nodeHdr(d.w)+"
+"'<div class=\"cr\"><span>Running</span><span class=\"'+(d.w.ru?'ok':'dim')+'\">'+(d.w.ru?'YES':'No')+'</span></div>'+"
+"'<div class=\"cr\"><span>Start CMD</span><span class=\"'+(d.w.sc?'ok':'dim')+'\">'+(d.w.sc?'YES':'No')+'</span></div></div>';"
 "document.getElementById('cli').innerHTML=h;"
 "document.getElementById('cts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
@@ -206,7 +222,7 @@ static const char INDEX_HTML_TMPL[] =
 "xhr.send(f);}"
 "setInterval(()=>{"
 "if(document.getElementById('status').classList.contains('on'))fetchStatus();"
-"if(document.getElementById('clients').classList.contains('on'))fetchClients();"
+"if(document.getElementById('nodes').classList.contains('on'))fetchNodes();"
 "},2000);"
 "fetchStatus();"
 "</script></body></html>";
@@ -262,22 +278,43 @@ static esp_err_t h_status(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/clients  ── slave status JSON */
-static esp_err_t h_clients(httpd_req_t *req)
+/* Format a node's MAC as "AA:BB:CC:DD:EE:FF", or "" if never registered. */
+static void fmt_mac(char *buf, size_t sz, const slave_info_t *info)
 {
-    char lsh[32], lsw[32];
+    if (!info->peer_added) { buf[0] = '\0'; return; }
+    snprintf(buf, sz, "%02X:%02X:%02X:%02X:%02X:%02X",
+              info->mac[0], info->mac[1], info->mac[2],
+              info->mac[3], info->mac[4], info->mac[5]);
+}
+
+static bool node_connected(const slave_info_t *info)
+{
+    return info->peer_added &&
+           (esp_timer_get_time() - info->last_seen_us) < (int64_t)NODE_TIMEOUT_MS * 1000;
+}
+
+/* GET /api/nodes  ── dynamic node roster JSON (role, mac, ip, connected, last seen, status) */
+static esp_err_t h_nodes(httpd_req_t *req)
+{
+    char lsh[32], lsw[32], mach[24], macw[24];
     fmt_last_seen(lsh, sizeof(lsh), g_slave_honda.last_seen_us);
     fmt_last_seen(lsw, sizeof(lsw), g_slave_wallas.last_seen_us);
+    fmt_mac(mach, sizeof(mach), &g_slave_honda);
+    fmt_mac(macw, sizeof(macw), &g_slave_wallas);
 
-    char buf[320];
+    char buf[512];
     snprintf(buf, sizeof(buf),
-        "{\"h\":{\"ls\":\"%s\",\"ig\":%s,\"st\":%s,\"ru\":%s},"
-        "\"w\":{\"ls\":\"%s\",\"ru\":%s,\"sc\":%s}}",
-        lsh,
+        "{\"h\":{\"role\":\"SlaveHonda\",\"mac\":\"%s\",\"ip\":\"%s\",\"has_wifi\":%s,"
+        "\"connected\":%s,\"ls\":\"%s\",\"ig\":%s,\"st\":%s,\"ru\":%s},"
+        "\"w\":{\"role\":\"SlaveWallas\",\"mac\":\"%s\",\"ip\":\"%s\",\"has_wifi\":%s,"
+        "\"connected\":%s,\"ls\":\"%s\",\"ru\":%s,\"sc\":%s}}",
+        mach, g_slave_honda.ip, g_slave_honda.has_wifi ? "true":"false",
+        node_connected(&g_slave_honda) ? "true":"false", lsh,
         g_slave_honda.honda_ign_on   ? "true":"false",
         g_slave_honda.honda_starting ? "true":"false",
         g_slave_honda.honda_running  ? "true":"false",
-        lsw,
+        macw, g_slave_wallas.ip, g_slave_wallas.has_wifi ? "true":"false",
+        node_connected(&g_slave_wallas) ? "true":"false", lsw,
         g_slave_wallas.wallas_running  ? "true":"false",
         g_slave_wallas.wallas_start_cmd? "true":"false");
     httpd_resp_set_type(req, "application/json");
@@ -438,7 +475,7 @@ esp_err_t web_server_start(void)
     static const httpd_uri_t routes[] = {
         { .uri="/",           .method=HTTP_GET,  .handler=h_root       },
         { .uri="/api/status", .method=HTTP_GET,  .handler=h_status     },
-        { .uri="/api/clients",.method=HTTP_GET,  .handler=h_clients    },
+        { .uri="/api/nodes",  .method=HTTP_GET,  .handler=h_nodes      },
         { .uri="/wifi-setup", .method=HTTP_GET,  .handler=h_wifi_setup },
         { .uri="/wifi-save",  .method=HTTP_POST, .handler=h_wifi_save  },
         { .uri="/api/scan",   .method=HTTP_GET,  .handler=h_scan       },

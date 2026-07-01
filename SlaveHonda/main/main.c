@@ -1,7 +1,7 @@
 /*
  * SlaveHonda — ESP32 Honda EU70IS Generator Slave
  * Author: Stein Espe
- * Framework: ESP-IDF v5.x
+ * Framework: ESP-IDF v6.x
  *
  * Build:  idf.py build
  * Flash:  idf.py -p COMx flash monitor
@@ -12,6 +12,13 @@
  *   GPIO 15  INPUT  — Running feedback  (LOW = engine running)
  *   GPIO  4  OUTPUT — External status LED
  *   GPIO  2  OUTPUT — Onboard LED (heartbeat)
+ *
+ * Peer discovery: no custom/hardcoded MAC addresses. This unit uses its own
+ * factory MAC. WiFi is preferred (same as the other units) but the generator
+ * location may be out of router range: if the WiFi connect attempt fails,
+ * this unit does NOT reopen the config portal — instead it scans ESP-NOW
+ * channels for MasterHonda's discovery beacon and operates without an IP.
+ * See FSD_RemoteStart.md §3.2 / §9.2.
  */
 
 #include <stdio.h>
@@ -39,10 +46,6 @@
 
 static const char *TAG = FIRMWARE_NAME;
 
-/* ── Custom MACs ─────────────────────────────────────────────────────────────── */
-static const uint8_t SLAVE_MAC[]  = {0x30,0xAE,0xA4,0x1A,0xAE,0x33};
-static const uint8_t MASTER_MAC[] = {0x30,0xAE,0xA4,0x89,0x92,0x7A};
-
 /* ── Pins ────────────────────────────────────────────────────────────────────── */
 #define PIN_STARTER_RELAY   GPIO_NUM_13   /* active LOW = crank ON     */
 #define PIN_IGNITION_RELAY  GPIO_NUM_14   /* active LOW = ignition ON  */
@@ -55,7 +58,11 @@ static const uint8_t MASTER_MAC[] = {0x30,0xAE,0xA4,0x89,0x92,0x7A};
 #define HONDA_IGN_WARMUP_MS   10000
 #define STATUS_SEND_MS        10000
 
-/* ── Message Structures ──────────────────────────────────────────────────────── */
+/* ── ESP-NOW channel scan fallback (see FSD §3.2/§3.4) ─────────────────────── */
+#define SCAN_CHANNEL_COUNT   13
+#define SCAN_DWELL_MS        2500
+
+/* ── Message Structures (see FSD §3.3) ─────────────────────────────────────── */
 typedef struct {
     char  label[32];
     bool  HondaRunningFB;
@@ -64,10 +71,16 @@ typedef struct {
 } master_msg_t;
 
 typedef struct {
+    char  label[32];   /* "MasterHonda" */
+} master_beacon_t;      /* broadcast-only, discovery */
+
+typedef struct {
     char  label[32];
     bool  HondaIgnitionOn;
     bool  HondaStarting;
     bool  HondaRunning;
+    char  ip[16];
+    bool  has_wifi;
 } slave_msg_t;
 
 /* ── Global State ────────────────────────────────────────────────────────────── */
@@ -75,6 +88,11 @@ volatile bool g_start_cmd    = false;
          bool g_honda_running = false;
          bool g_honda_starting= false;
          bool g_honda_ign_on  = false;
+         bool g_has_wifi      = false;
+
+/* ── Master discovery state ─────────────────────────────────────────────────── */
+static uint8_t s_master_mac[6]  = {0};
+static bool    s_master_known   = false;
 
 /* ── WiFi ────────────────────────────────────────────────────────────────────── */
 #define WIFI_CONNECTED_BIT BIT0
@@ -137,15 +155,17 @@ static void start_config_portal(void) {
     esp_restart();
 }
 
-static void wifi_init_and_connect(void) {
+/* Returns true if WiFi connected normally. Returns false (WiFi driver left
+ * started, but not associated) when connect failed with existing credentials
+ * — caller falls back to the ESP-NOW channel scan instead of the portal. */
+static bool wifi_init_and_connect(void) {
     s_wifi_eg = xEventGroupCreate();
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
-    esp_wifi_set_mode(WIFI_MODE_STA);
-    esp_wifi_set_mac(WIFI_IF_STA, SLAVE_MAC);
+    esp_wifi_set_mode(WIFI_MODE_STA);   /* own factory MAC, never overridden */
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,   &wifi_event_handler, NULL);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP,&wifi_event_handler, NULL);
 
@@ -158,12 +178,25 @@ static void wifi_init_and_connect(void) {
         esp_wifi_start();
         EventBits_t b = xEventGroupWaitBits(s_wifi_eg,
             WIFI_CONNECTED_BIT|WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
-        if (b & WIFI_CONNECTED_BIT) { web_server_start(); return; }
-        ESP_LOGW(TAG, "Connect failed, opening portal");
-        esp_wifi_stop();
+        if (b & WIFI_CONNECTED_BIT) { web_server_start(); return true; }
+        ESP_LOGW(TAG, "Connect failed — falling back to ESP-NOW channel scan (no portal)");
+        return false;   /* leave WiFi driver started so we can set the channel manually */
     }
+
+    /* Never configured at all → still need the portal for initial setup */
     g_portal_mode = true;
     start_config_portal();
+    return true;   /* unreachable — start_config_portal() restarts the device */
+}
+
+/* ── IP helper ──────────────────────────────────────────────────────────────── */
+static void get_ip_str(char *buf, size_t sz) {
+    esp_netif_ip_info_t info;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (g_has_wifi && netif && esp_netif_get_ip_info(netif, &info) == ESP_OK)
+        snprintf(buf, sz, IPSTR, IP2STR(&info.ip));
+    else
+        buf[0] = '\0';
 }
 
 /* ── Honda State Machine ─────────────────────────────────────────────────────── */
@@ -195,17 +228,27 @@ static void honda_stop(void) {
     g_honda_ign_on   = false;
 }
 
-/* ── ESP-NOW Peer and Send ───────────────────────────────────────────────────── */
-static esp_now_peer_info_t s_peer_master;
+/* ── ESP-NOW ─────────────────────────────────────────────────────────────────── */
+static void espnow_add_peer(const uint8_t *mac) {
+    esp_now_peer_info_t peer = {0};
+    memcpy(peer.peer_addr, mac, 6);
+    peer.channel = 0;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) != ESP_OK)
+        ESP_LOGE(TAG, "Failed to add peer " MACSTR, MAC2STR(mac));
+}
 
 static void send_status(void) {
+    if (!s_master_known) return;   /* Master not discovered yet — nothing to send to */
     g_honda_running = !gpio_get_level(PIN_RUNNING_FB);
     slave_msg_t msg = {0};
     strlcpy(msg.label, "SlaveHonda->Master", sizeof(msg.label));
     msg.HondaIgnitionOn = g_honda_ign_on;
     msg.HondaStarting   = g_honda_starting;
     msg.HondaRunning    = g_honda_running;
-    esp_now_send(MASTER_MAC, (uint8_t *)&msg, sizeof(msg));
+    msg.has_wifi         = g_has_wifi;
+    get_ip_str(msg.ip, sizeof(msg.ip));
+    esp_now_send(s_master_mac, (uint8_t *)&msg, sizeof(msg));
 }
 
 static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t st) {}
@@ -213,7 +256,20 @@ static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_stat
 static void espnow_recv_cb(const esp_now_recv_info_t *info,
                            const uint8_t *data, int len)
 {
-    if (len < (int)sizeof(master_msg_t)) return;
+    if (len == (int)sizeof(master_beacon_t)) {
+        master_beacon_t beacon;
+        memcpy(&beacon, data, sizeof(beacon));
+        if (strncmp(beacon.label, "MasterHonda", 11) == 0 &&
+            (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0)) {
+            memcpy(s_master_mac, info->src_addr, 6);
+            espnow_add_peer(s_master_mac);
+            s_master_known = true;
+            ESP_LOGI(TAG, "Master found: " MACSTR, MAC2STR(s_master_mac));
+            send_status();   /* immediate registration heartbeat */
+        }
+        return;
+    }
+    if (len != (int)sizeof(master_msg_t)) return;
     master_msg_t msg;
     memcpy(&msg, data, sizeof(msg));
     ESP_LOGI(TAG, "Recv HondaStart=%d", msg.HondaStart);
@@ -232,12 +288,28 @@ static void espnow_init(void) {
     esp_now_init();
     esp_now_register_send_cb(espnow_send_cb);
     esp_now_register_recv_cb(espnow_recv_cb);
-    memset(&s_peer_master, 0, sizeof(s_peer_master));
-    memcpy(s_peer_master.peer_addr, MASTER_MAC, 6);
-    s_peer_master.channel = 0;
-    s_peer_master.encrypt = false;
-    esp_now_add_peer(&s_peer_master);
-    ESP_LOGI(TAG, "ESP-NOW ready");
+    ESP_LOGI(TAG, "ESP-NOW ready, listening for MasterHonda beacon");
+}
+
+/* Blocks until a MasterHonda beacon is heard, cycling through all 2.4 GHz
+ * channels. Used only when WiFi connect failed (§3.2). Retries forever. */
+static void espnow_channel_scan(void) {
+    ESP_LOGW(TAG, "Starting ESP-NOW channel scan for MasterHonda");
+    for (;;) {
+        for (uint8_t ch = 1; ch <= SCAN_CHANNEL_COUNT; ch++) {
+            esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            int64_t start = esp_timer_get_time();
+            while (!s_master_known &&
+                   (esp_timer_get_time() - start) < (int64_t)SCAN_DWELL_MS * 1000) {
+                vTaskDelay(pdMS_TO_TICKS(50));
+            }
+            if (s_master_known) {
+                ESP_LOGI(TAG, "Locked to channel %d", ch);
+                return;
+            }
+        }
+        ESP_LOGW(TAG, "Full channel scan found no MasterHonda beacon — retrying");
+    }
 }
 
 /* ── GPIO Init ───────────────────────────────────────────────────────────────── */
@@ -287,8 +359,12 @@ void app_main(void)
     }
 
     gpio_init_pins();
-    wifi_init_and_connect();
+    g_has_wifi = wifi_init_and_connect();
     espnow_init();
+
+    if (!g_has_wifi) {
+        espnow_channel_scan();   /* blocks until MasterHonda is found */
+    }
 
     xTaskCreate(status_task,    "status",    3072, NULL, 4, NULL);
     xTaskCreate(heartbeat_task, "heartbeat", 1024, NULL, 2, NULL);

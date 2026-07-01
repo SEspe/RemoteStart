@@ -1,7 +1,7 @@
 /*
  * MasterHonda — ESP32 Master Remote Start Controller
  * Author: Stein Espe
- * Framework: ESP-IDF v5.x
+ * Framework: ESP-IDF v6.x
  *
  * Build:  idf.py build
  * Flash:  idf.py -p COMx flash monitor
@@ -9,6 +9,11 @@
  *
  * First startup: connect to "MasterHonda-Config" WiFi (pw: honda1234),
  *   open 192.168.4.1, enter your router credentials.
+ *
+ * Peer discovery: no custom/hardcoded MAC addresses. Each unit uses its own
+ * factory MAC. MasterHonda broadcasts a beacon; slaves that hear it learn
+ * Master's MAC and register themselves via their normal heartbeat — see
+ * FSD_RemoteStart.md §3.2.
  */
 
 #include <stdio.h>
@@ -36,10 +41,10 @@
 
 static const char *TAG = FIRMWARE_NAME;
 
-/* ── Custom MAC Addresses ──────────────────────────────────────────────────── */
-static const uint8_t MASTER_MAC[]      = {0x30,0xAE,0xA4,0x89,0x92,0x7A};
-static const uint8_t SLAVE_HONDA_MAC[] = {0x30,0xAE,0xA4,0x1A,0xAE,0x33};
-static const uint8_t SLAVE_WALLAS_MAC[]= {0x30,0xAE,0xA4,0x1A,0xAE,0x30};
+/* ── Peer Discovery ────────────────────────────────────────────────────────── */
+static const uint8_t BROADCAST_MAC[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
+#define BEACON_INTERVAL_MS   2000
+#define NODE_TIMEOUT_MS      30000
 
 /* ── Pin Definitions ───────────────────────────────────────────────────────── */
 #define PIN_HONDA_STARTED_FB     GPIO_NUM_13   /* Output: Honda running LED   */
@@ -53,7 +58,7 @@ static const uint8_t SLAVE_WALLAS_MAC[]= {0x30,0xAE,0xA4,0x1A,0xAE,0x30};
 #define HONDA_RESTART_BLOCK_MS   30000
 #define WALLAS_SEND_INTERVAL_MS  15000
 
-/* ── Message Structures (shared with slaves) ───────────────────────────────── */
+/* ── Message Structures (shared with slaves — see FSD §3.3) ───────────────── */
 typedef struct {
     char  label[32];
     bool  HondaRunningFB;
@@ -62,16 +67,24 @@ typedef struct {
 } master_msg_t;
 
 typedef struct {
+    char  label[32];   /* "MasterHonda" */
+} master_beacon_t;      /* broadcast-only, discovery */
+
+typedef struct {
     char  label[32];
     bool  HondaIgnitionOn;
     bool  HondaStarting;
     bool  HondaRunning;
+    char  ip[16];
+    bool  has_wifi;
 } slave_honda_msg_t;
 
 typedef struct {
     char  label[32];
     bool  WallasRunning;
     bool  WallasStart;
+    char  ip[16];
+    bool  has_wifi;
 } slave_wallas_msg_t;
 
 /* ── Global State (written from ISR + read from task) ──────────────────────── */
@@ -79,8 +92,12 @@ volatile bool g_honda_start_cmd  = false;
 volatile bool g_wallas_start_cmd = false;
          bool g_slave_honda_running = false;
 
-/* ── Slave Status (populated by ESP-NOW recv callback) ─────────────────────── */
+/* ── Slave Roster (populated dynamically by ESP-NOW recv callback) ─────────── */
 typedef struct {
+    uint8_t  mac[6];
+    bool     peer_added;
+    char     ip[16];
+    bool     has_wifi;
     int64_t  last_seen_us;
     bool     honda_ign_on;
     bool     honda_starting;
@@ -198,10 +215,7 @@ static void wifi_init_and_connect(void)
 
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     ESP_ERROR_CHECK(esp_wifi_init(&cfg));
-
-    /* Set custom MAC before anything else */
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));
-    ESP_ERROR_CHECK(esp_wifi_set_mac(WIFI_IF_STA, MASTER_MAC));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_STA));   /* own factory MAC, never overridden */
 
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,  &wifi_event_handler, NULL);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
@@ -227,7 +241,7 @@ static void wifi_init_and_connect(void)
         esp_wifi_stop();
     }
 
-    /* No credentials or connect failed → open config portal */
+    /* No credentials or connect failed → open config portal (WiFi is mandatory for Master) */
     g_portal_mode = true;
     start_config_portal();
     /* Never returns — portal restarts device after save */
@@ -237,28 +251,6 @@ static void wifi_init_and_connect(void)
 static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t st)
 {
     /* Silently discard; log if needed for debug */
-}
-
-static void espnow_recv_cb(const esp_now_recv_info_t *info,
-                           const uint8_t *data, int len)
-{
-    const uint8_t *src = info->src_addr;
-
-    if (memcmp(src, SLAVE_HONDA_MAC, 6) == 0 && len >= (int)sizeof(slave_honda_msg_t)) {
-        slave_honda_msg_t msg;
-        memcpy(&msg, data, sizeof(msg));
-        g_slave_honda.last_seen_us  = esp_timer_get_time();
-        g_slave_honda.honda_ign_on  = msg.HondaIgnitionOn;
-        g_slave_honda.honda_starting = msg.HondaStarting;
-        g_slave_honda.honda_running  = msg.HondaRunning;
-        g_slave_honda_running = msg.HondaRunning;
-        gpio_set_level(PIN_HONDA_STARTED_FB, msg.HondaRunning ? 1 : 0);
-    } else if (memcmp(src, SLAVE_WALLAS_MAC, 6) == 0 && len >= (int)sizeof(slave_wallas_msg_t)) {
-        slave_wallas_msg_t msg;
-        memcpy(&msg, data, sizeof(msg));
-        g_slave_wallas.last_seen_us   = esp_timer_get_time();
-        g_slave_wallas.wallas_running  = msg.WallasRunning;
-    }
 }
 
 static void espnow_add_peer(const uint8_t *mac)
@@ -271,36 +263,96 @@ static void espnow_add_peer(const uint8_t *mac)
         ESP_LOGE(TAG, "Failed to add peer " MACSTR, MAC2STR(mac));
 }
 
+/* Register (or re-register, if the MAC changed — e.g. hardware swap) a slave's
+ * real MAC as an ESP-NOW peer. See FSD §3.2. */
+static void register_peer(slave_info_t *info, const uint8_t *mac)
+{
+    if (info->peer_added && memcmp(info->mac, mac, 6) == 0) return;
+    if (info->peer_added) esp_now_del_peer(info->mac);
+    espnow_add_peer(mac);
+    memcpy(info->mac, mac, 6);
+    info->peer_added = true;
+    ESP_LOGI(TAG, "Registered peer " MACSTR, MAC2STR(mac));
+}
+
+static bool node_connected(const slave_info_t *info)
+{
+    return info->peer_added &&
+           (esp_timer_get_time() - info->last_seen_us) < (int64_t)NODE_TIMEOUT_MS * 1000;
+}
+
+static void espnow_recv_cb(const esp_now_recv_info_t *info,
+                           const uint8_t *data, int len)
+{
+    const uint8_t *src = info->src_addr;
+
+    if (len == (int)sizeof(slave_honda_msg_t)) {
+        slave_honda_msg_t msg;
+        memcpy(&msg, data, sizeof(msg));
+        if (strncmp(msg.label, "SlaveHonda", 10) == 0) {
+            register_peer(&g_slave_honda, src);
+            g_slave_honda.last_seen_us   = esp_timer_get_time();
+            g_slave_honda.honda_ign_on   = msg.HondaIgnitionOn;
+            g_slave_honda.honda_starting = msg.HondaStarting;
+            g_slave_honda.honda_running  = msg.HondaRunning;
+            g_slave_honda.has_wifi       = msg.has_wifi;
+            strlcpy(g_slave_honda.ip, msg.ip, sizeof(g_slave_honda.ip));
+            g_slave_honda_running = msg.HondaRunning;
+            gpio_set_level(PIN_HONDA_STARTED_FB, msg.HondaRunning ? 1 : 0);
+            return;
+        }
+    }
+    if (len == (int)sizeof(slave_wallas_msg_t)) {
+        slave_wallas_msg_t msg;
+        memcpy(&msg, data, sizeof(msg));
+        if (strncmp(msg.label, "SlaveWallas", 11) == 0) {
+            register_peer(&g_slave_wallas, src);
+            g_slave_wallas.last_seen_us  = esp_timer_get_time();
+            g_slave_wallas.wallas_running = msg.WallasRunning;
+            g_slave_wallas.has_wifi       = msg.has_wifi;
+            strlcpy(g_slave_wallas.ip, msg.ip, sizeof(g_slave_wallas.ip));
+        }
+    }
+}
+
 static void espnow_init(void)
 {
     ESP_ERROR_CHECK(esp_now_init());
     esp_now_register_send_cb(espnow_send_cb);
     esp_now_register_recv_cb(espnow_recv_cb);
-    espnow_add_peer(SLAVE_HONDA_MAC);
-    espnow_add_peer(SLAVE_WALLAS_MAC);
+    espnow_add_peer(BROADCAST_MAC);   /* needed to send the discovery beacon */
     ESP_LOGI(TAG, "ESP-NOW ready");
+}
+
+static void send_beacon(void)
+{
+    master_beacon_t beacon = {0};
+    strlcpy(beacon.label, "MasterHonda", sizeof(beacon.label));
+    esp_now_send(BROADCAST_MAC, (uint8_t *)&beacon, sizeof(beacon));
 }
 
 static void send_to_honda(void)
 {
+    if (!node_connected(&g_slave_honda)) return;   /* nothing to send to yet */
     master_msg_t msg = {0};
     strlcpy(msg.label, "Master->SlaveHonda", sizeof(msg.label));
     msg.HondaRunningFB  = g_slave_honda_running;
     msg.HondaIgnitionOn = gpio_get_level(PIN_HONDA_MANUAL_START);
     msg.HondaStart      = g_honda_start_cmd;
-    esp_now_send(SLAVE_HONDA_MAC, (uint8_t *)&msg, sizeof(msg));
+    esp_now_send(g_slave_honda.mac, (uint8_t *)&msg, sizeof(msg));
     vTaskDelay(pdMS_TO_TICKS(20));
-    esp_now_send(SLAVE_HONDA_MAC, (uint8_t *)&msg, sizeof(msg)); /* redundant */
+    esp_now_send(g_slave_honda.mac, (uint8_t *)&msg, sizeof(msg)); /* redundant */
     ESP_LOGI(TAG, "Honda CMD: start=%d", msg.HondaStart);
 }
 
 static void send_to_wallas(void)
 {
+    if (!node_connected(&g_slave_wallas)) return;   /* nothing to send to yet */
     master_msg_t msg = {0};
     strlcpy(msg.label, "Master->SlaveWallas", sizeof(msg.label));
     msg.HondaStart = g_wallas_start_cmd;
     g_slave_wallas.wallas_start_cmd = g_wallas_start_cmd;
-    esp_now_send(SLAVE_WALLAS_MAC, (uint8_t *)&msg, sizeof(msg));
+    esp_now_send(g_slave_wallas.mac, (uint8_t *)&msg, sizeof(msg));
     ESP_LOGI(TAG, "Wallas CMD: start=%d", msg.HondaStart);
 }
 
@@ -367,6 +419,15 @@ static void gpio_init(void)
     gpio_isr_handler_add(PIN_WALLAS_MANUAL_START,isr_wallas_manual,NULL);
 }
 
+/* ── Beacon Task ────────────────────────────────────────────────────────────── */
+static void beacon_task(void *arg)
+{
+    for (;;) {
+        send_beacon();
+        vTaskDelay(pdMS_TO_TICKS(BEACON_INTERVAL_MS));
+    }
+}
+
 /* ── Main Control Task ──────────────────────────────────────────────────────── */
 static void master_task(void *arg)
 {
@@ -418,7 +479,8 @@ void app_main(void)
     /* ESP-NOW (must be after WiFi connected for correct channel) */
     espnow_init();
 
-    /* Main control logic task */
+    /* Beacon + main control logic tasks */
+    xTaskCreate(beacon_task, "beacon", 2048, NULL, 4, NULL);
     xTaskCreate(master_task, "master", 4096, NULL, 5, NULL);
 
     ESP_LOGI(TAG, "Ready");
