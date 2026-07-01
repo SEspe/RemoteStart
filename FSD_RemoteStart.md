@@ -1,9 +1,11 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.1  
+**Version:** 1.2  
 **Author:** Stein Espe  
-**Date:** 2026-06-30  
-**Changelog:** v1.1 — Converted firmware framework from Arduino to ESP-IDF v5
+**Date:** 2026-07-01  
+**Changelog:**
+- v1.2 — Migrated firmware and CI to ESP-IDF v6.0.1; SlaveWallas moved to ESP32-C6; added WiFi network scan to the config portal
+- v1.1 — Converted firmware framework from Arduino to ESP-IDF v5
 
 ---
 
@@ -20,7 +22,7 @@ Three ESP32 microcontrollers communicate over the **ESP-NOW** peer-to-peer proto
                             Web UI / OTA
 ```
 
-**Development framework:** ESP-IDF v5 (native Espressif SDK). No Arduino framework or third-party libraries are used.
+**Development framework:** ESP-IDF v6.0.1 (native Espressif SDK). No Arduino framework or third-party libraries are used.
 
 ---
 
@@ -28,13 +30,15 @@ Three ESP32 microcontrollers communicate over the **ESP-NOW** peer-to-peer proto
 
 ### 2.1 Units
 
-| Unit         | MCU   | Role              | Custom MAC        |
-|--------------|-------|-------------------|-------------------|
-| MasterHonda  | ESP32 | Master controller | 30:AE:A4:89:92:7A |
-| SlaveHonda   | ESP32 | Honda generator   | 30:AE:A4:1A:AE:33 |
-| SlaveWallas  | ESP32 | Wallas heater     | 30:AE:A4:1A:AE:30 |
+| Unit         | MCU      | Role              | Custom MAC        |
+|--------------|----------|-------------------|--------------------|
+| MasterHonda  | ESP32    | Master controller | 30:AE:A4:89:92:7A |
+| SlaveHonda   | ESP32    | Honda generator   | 30:AE:A4:1A:AE:33 |
+| SlaveWallas  | ESP32-C6 | Wallas heater     | 30:AE:A4:1A:AE:30 |
 
 Custom MAC addresses are applied at startup via `esp_wifi_set_mac()` before `esp_wifi_start()`, so hardware modules can be replaced without updating peer tables in other units.
+
+> **SlaveWallas chip note:** ESP32-C6 (not ESP32). Requires `idf.py set-target esp32c6` before the first build/flash of that project, and uses the onboard USB-Serial/JTAG console (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`) rather than a separate UART bridge chip.
 
 ### 2.2 MasterHonda Pin Assignments
 
@@ -77,14 +81,19 @@ Custom MAC addresses are applied at startup via `esp_wifi_set_mac()` before `esp
 
 ### 3.1 ESP-NOW
 
-- **Protocol:** IEEE 802.11 ESP-NOW peer-to-peer; uses `esp_now.h` from ESP-IDF.
+- **Protocol:** IEEE 802.11 ESP-NOW peer-to-peer; uses `esp_now.h`, provided by the `esp_wifi` component in ESP-IDF v6 (no longer a standalone `esp_now` component as in v5).
 - **Channel:** Set to `0` when adding peers (`esp_now_peer_info_t.channel = 0`), which instructs the driver to use the current WiFi STA channel automatically. All three units must connect to the same WiFi router to share a channel.
 - **Encryption:** Disabled (`peer.encrypt = false`). Enable per-peer AES encryption via `esp_now_peer_info_t.encrypt = true` and supply a 16-byte LMK for production hardening.
-- **Receive callback API:** Uses the ESP-IDF v5 signature:
+- **Receive callback API:**
   ```c
   void espnow_recv_cb(const esp_now_recv_info_t *info,
                       const uint8_t *data, int len);
   ```
+- **Send callback API (ESP-IDF v6 signature):**
+  ```c
+  void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t status);
+  ```
+  Changed from the v5 signature `(const uint8_t *mac, esp_now_send_status_t status)`.
 
 ### 3.2 Message Structures
 
@@ -150,9 +159,10 @@ On first power-up, each unit detects that no WiFi credentials are stored in NVS 
 
 3. Connect a smartphone or laptop to that AP.
 4. Navigate to `http://192.168.4.1/wifi-setup`.
-5. Enter the home/vessel WiFi SSID and password and submit the form.
-6. Credentials are written to NVS (`esp_err_t nvs_set_str()`), and the unit reboots.
-7. On subsequent boots the unit reads credentials from NVS and connects directly in STA mode.
+5. Tap **Scan Networks** to list nearby SSIDs (signal strength + lock icon for secured networks), or type the SSID manually. Tapping a result fills in the SSID field.
+6. Enter the WiFi password (if required) and submit the form.
+7. Credentials are written to NVS (`esp_err_t nvs_set_str()`), and the unit reboots.
+8. On subsequent boots the unit reads credentials from NVS and connects directly in STA mode.
 
 > **Important:** All three units must connect to the **same** WiFi network so they share a channel for ESP-NOW.
 
@@ -160,8 +170,13 @@ On first power-up, each unit detects that no WiFi credentials are stored in NVS 
 
 The portal is served by `web_server.c`:
 
-- `GET /wifi-setup` — HTML credential form
+- `GET /wifi-setup` — HTML credential form with in-page network scan (JS fetches `/api/scan` and renders a clickable list)
+- `GET /api/scan` — triggers `esp_wifi_scan_start()` (active scan, capped at 20 results) and returns a JSON array of `{ssid, rssi, auth}`
 - `POST /wifi-save` — URL-encoded body parsed, SSID/password written to NVS, unit restarts
+
+During the portal, WiFi runs in `WIFI_MODE_APSTA` (rather than AP-only) so the STA radio can perform the scan while the SoftAP keeps serving the setup page. A `g_portal_mode` flag suppresses the normal `WIFI_EVENT_STA_START → esp_wifi_connect()` auto-connect handler while the portal is active, since no credentials are configured yet.
+
+> **Status:** this scan feature is implemented in `main.c`/`web_server.c` on all three units but not yet committed to git as of this revision.
 
 ### Resetting WiFi credentials
 
@@ -209,17 +224,17 @@ Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embed
 
 | ESP-IDF component  | Purpose                                   |
 |--------------------|-------------------------------------------|
-| `esp_wifi`         | WiFi STA / SoftAP, custom MAC             |
+| `esp_wifi`         | WiFi STA / SoftAP, scanning, custom MAC, ESP-NOW (`esp_now.h`) |
 | `esp_event`        | Default event loop for WiFi/IP events     |
 | `esp_netif`        | Network interface (STA + AP)              |
-| `esp_now`          | Peer-to-peer messaging                    |
 | `nvs_flash` / `nvs`| Non-volatile storage of WiFi credentials  |
-| `driver` (gpio)    | GPIO configuration, levels, ISR service   |
+| `esp_driver_gpio`  | GPIO configuration, levels, ISR service   |
 | `esp_http_server`  | Synchronous HTTP server                   |
-| `esp_ota_ops`      | OTA write, partition selection, reboot    |
-| `app_update`       | `esp_ota_get_next_update_partition()`     |
+| `esp_ota_ops` / `app_update` | OTA write, partition selection, reboot |
 | `esp_timer`        | Microsecond timestamps for timing logic   |
 | `freertos`         | Tasks, event groups, delays               |
+
+> ESP-IDF v6 component changes vs. v5: `esp_now.h` is now provided by `esp_wifi` (no standalone `esp_now` component); GPIO driver moved to component `esp_driver_gpio`; `esp_ota_ops` is covered by `app_update`. See also the send-callback signature change in §3.1.
 
 ---
 
@@ -245,6 +260,7 @@ HTTP endpoints:
 | GET    | `/api/status`  | JSON: pin levels and global state      |
 | GET    | `/api/clients` | JSON: slave last-seen and status       |
 | GET    | `/wifi-setup`  | WiFi credential form (portal only)     |
+| GET    | `/api/scan`    | JSON array of nearby networks (portal only) |
 | POST   | `/wifi-save`   | Save credentials to NVS, restart       |
 | POST   | `/ota/upload`  | Raw binary OTA upload                  |
 
@@ -257,7 +273,7 @@ Access at: `http://<Slave-IP>/`
 | Status     | Relay states, running feedback, last received command | 2 s auto |
 | OTA Update | File input + XHR upload to `/ota/upload`              | Manual   |
 
-HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/wifi-save`, `/ota/upload`.
+HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
 
 ### 6.3 Status JSON format
 
@@ -326,7 +342,7 @@ SlaveWallas_v1.0.0.bin
 
 ### GitHub Actions CI/CD
 
-Pushing a version tag triggers `.github/workflows/release.yml`, which builds affected units using `espressif/esp-idf-ci-action@v1` (ESP-IDF v5.2.1) and attaches the `.bin` files to a GitHub Release.
+Pushing a version tag triggers `.github/workflows/release.yml`, which builds affected units using `espressif/esp-idf-ci-action@v1` (pinned to ESP-IDF v6.0.1 via `env.IDF_VERSION`) and attaches the `.bin` files to a GitHub Release.
 
 | Tag pattern  | Units built                      |
 |--------------|----------------------------------|
@@ -391,14 +407,15 @@ app_main()
 
 ### Prerequisites
 
-- ESP-IDF v5.x installed and sourced (`idf.py` on PATH)
-- ESP32 board connected via USB
+- ESP-IDF v6.0.1 installed and sourced (`idf.py` on PATH)
+- MasterHonda/SlaveHonda: ESP32 board connected via USB. SlaveWallas: ESP32-C6 board connected via USB (native USB-Serial/JTAG, no separate UART chip needed).
 
 ### Commands
 
 ```bash
 # Build
 cd MasterHonda          # or SlaveHonda / SlaveWallas
+idf.py set-target esp32c6   # SlaveWallas only, first build
 idf.py build
 
 # First flash via USB
@@ -422,4 +439,4 @@ Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). 
 - ESP-NOW channel is derived from the connected WiFi AP. If the router changes channel (unusual), all three units must be restarted to re-sync.
 - `HondaStart` in `master_msg_t` carries the Wallas command to `SlaveWallas` (struct reuse from the original design). A future version should introduce a dedicated `wallas_cmd_t` message.
 - During OTA upload (~10–30 s depending on file size), the HTTP server task is busy; ESP-NOW receive callbacks still fire but any response sends from that task are deferred.
-- The SoftAP portal does not scan and list nearby networks. The SSID must be entered manually.
+- The SoftAP portal's network scan (§4) is capped at 20 results and only lists SSID/RSSI/auth-type — it does not indicate whether a network was previously seen or is the vessel's own router specifically.

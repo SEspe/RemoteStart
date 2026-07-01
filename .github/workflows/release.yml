@@ -9,7 +9,7 @@ on:
       - 'wallas-v*'  # e.g. wallas-v1.0.2 → SlaveWallas only
 
 env:
-  IDF_VERSION: v5.2.1   # pin ESP-IDF version
+  IDF_VERSION: v6.0.1   # pin ESP-IDF version
 
 jobs:
   build-master:
@@ -110,7 +110,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           body: |
             ## Firmware Release ${{ github.ref_name }}
-            Built with ESP-IDF ${{ env.IDF_VERSION }} for ESP32.
+            Built with ESP-IDF ${{ env.IDF_VERSION }}. MasterHonda/SlaveHonda target ESP32; SlaveWallas targets ESP32-C6.
 
             ### Flash via OTA
             1. Open device web UI → **OTA Update** tab
@@ -123,7 +123,8 @@ jobs:
             ```
             or with esptool:
             ```
-            esptool.py --chip esp32 -p COMx write_flash 0x10000 <name>.bin
+            esptool.py --chip esp32 -p COMx write_flash 0x10000 MasterHonda_<ver>.bin      # MasterHonda / SlaveHonda
+            esptool.py --chip esp32c6 -p COMx write_flash 0x10000 SlaveWallas_<ver>.bin    # SlaveWallas
             ```
           files: artifacts/*.bin
           fail_on_unmatched_files: false
