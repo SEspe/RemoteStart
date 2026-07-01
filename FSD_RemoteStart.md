@@ -74,7 +74,7 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 
 | GPIO | Direction | Signal                                   |
 |------|-----------|------------------------------------------|
-|  0   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
+| 16   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
 |  2   | OUTPUT    | Onboard LED (fast blink when running)    |
 | 13   | INPUT     | Wallas running feedback (HIGH = running) |
 

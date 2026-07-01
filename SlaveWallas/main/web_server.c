@@ -27,7 +27,7 @@ extern volatile bool g_wifi_save_requested;
 extern char          g_new_ssid[64];
 extern char          g_new_pass[64];
 
-#define PIN_WALLAS_RELAY   0
+#define PIN_WALLAS_RELAY  16
 #define PIN_WALLAS_FB     13
 
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
