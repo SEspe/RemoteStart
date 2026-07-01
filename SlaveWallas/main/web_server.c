@@ -179,7 +179,7 @@ static const char INDEX_HTML[] =
 "'<span class=\"btns\"><button class=\"go go-on\" onclick=\"gset('+p+',1)\">ON</button>"
 "<button class=\"go go-off\" onclick=\"gset('+p+',0)\">OFF</button></span>':"
 "'<span class=\"dim\" style=\"font-size:.7rem\">reserved</span>';"
-"h+='<div class=\"row\"><span><span class=\"led off-l\" id=\"dl'+p+'\"></span> GPIO'+p+'</span>'+ctl+'</div>';}"
+"h+='<div class=\"row\"><span>GPIO'+p+' : <span class=\"led off-l\" id=\"dl'+p+'\"></span></span>'+ctl+'</div>';}"
 "document.getElementById('dbg').innerHTML=h;}"
 "function fetchDbg(){"
 "fetch('/api/gpio/status').then(r=>r.json()).then(d=>{"
