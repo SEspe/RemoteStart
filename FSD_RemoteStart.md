@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.5  
+**Version:** 1.6  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.6 — Slave heartbeats (`slave_msg_t`/`slave_wallas_msg_t`) now carry per-link RSSI, channel, and firmware version, sourced from the receiving radio's `rx_ctrl` on the last frame heard from MasterHonda (works whether or not the slave has its own WiFi/AP association). MasterHonda's Nodes tab is redesigned as a table (one row per node, RSSI/Channel/FW columns) instead of stacked cards, and the Pin Status tab gains manual **Start/Stop Honda** and **Start/Stop Wallas** buttons — a third command source OR'd in alongside the Victron relay and physical manual buttons via new `/api/honda/start\|stop` and `/api/wallas/start\|stop` endpoints. **Breaking change** (message struct sizes changed) — all three units must be upgraded together, same as §3.2.
 - v1.5 — Fixed an OTA upload bug on all three units: `h_ota_upload()` retried `httpd_req_recv()` forever on a timeout instead of giving up, so a client aborting mid-upload could permanently wedge the httpd worker (and, since there's only one, the entire web server) until a USB reflash. Now bounded to 5 consecutive timeouts before aborting cleanly. SlaveWallas: moved `PIN_WALLAS_FB` off GPIO13 (reserved for native USB-Serial/JTAG D+, §2.4) to GPIO18.
 - v1.4 — SlaveWallas: fixed heater relay pin (GPIO0 → GPIO16, matches actual wiring); added a GPIO23 indicator LED that mirrors the relay output for hardware-level confirmation. MasterHonda: added WiFi signal strength (RSSI) and channel to the Pin Status tab / `/api/status`
 - v1.3 — Removed custom MAC addressing; units now self-discover peers by function role over ESP-NOW. SlaveHonda gains a WiFi-optional fallback (ESP-NOW channel scan for MasterHonda when it cannot reach the router). MasterHonda's Clients tab becomes a Nodes tab (MAC, IP, connected status, last seen). **Breaking change** — see §3.2 and §12.
@@ -174,11 +175,15 @@ typedef struct {
 } slave_wallas_msg_t;
 ```
 
-`slave_msg_t` and `slave_wallas_msg_t` each gain two fields to support the Nodes tab (§6.1) and registration (§3.2):
+`slave_msg_t` and `slave_wallas_msg_t` each gain these fields to support the Nodes tab (§6.1) and registration (§3.2):
 ```c
-    char  ip[16];      // "" if unit currently has no WiFi/IP (e.g. SlaveHonda in channel-scan mode)
-    bool  has_wifi;     // true if this heartbeat was sent while WiFi-connected
+    char    ip[16];        // "" if unit currently has no WiFi/IP (e.g. SlaveHonda in channel-scan mode)
+    bool    has_wifi;      // true if this heartbeat was sent while WiFi-connected
+    int8_t  rssi;          // signal strength of the last frame heard from MasterHonda, dBm
+    uint8_t channel;       // channel that frame was received on
+    char    fw_version[12];// this slave's own FIRMWARE_VERSION string
 ```
+`rssi`/`channel` are read from `esp_now_recv_info_t.rx_ctrl` on whatever the slave most recently received from Master (beacon or command) — this works identically whether or not the slave has its own WiFi/AP association, so it reports real per-link quality even for a SlaveHonda running in ESP-NOW-only fallback (§3.2).
 
 #### MasterHonda → broadcast (`master_beacon_t`, new — discovery only)
 ```c
@@ -312,23 +317,29 @@ Access at: `http://<MasterHonda-IP>/`
 
 | Tab        | Content                                                      | Refresh  |
 |------------|--------------------------------------------------------------|----------|
-| Pin Status | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) | 2 s auto |
-| Nodes      | Roster of registered slave nodes (§3.2): role, MAC, IP, connected status, last seen, running status | 2 s auto |
+| Pin Status | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
+| Nodes      | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | OTA Update | File input + XHR upload to `/ota/upload`                     | Manual   |
 
-The Nodes tab replaces the old Clients tab. It is driven directly by MasterHonda's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than a fixed two-row layout — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) simply doesn't appear until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback).
+The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterHonda's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterHonda's own link.
+
+**Manual control:** the Pin Status tab's Start/Stop buttons are a third command source, OR'd in with the Victron relay and physical manual button (`g_web_honda_start`/`g_web_wallas_start` in `main.c`). Pressing Start latches the override on immediately (no need to wait for a GPIO edge); Stop clears the override and recomputes the command from current physical pin state. A web-triggered start persists across physical switch changes until explicitly stopped via the UI (or the corresponding physical button/relay signal is what next changes state and this recompute runs) — it does not silently clear itself.
 
 HTTP endpoints:
 
-| Method | Path           | Description                            |
-|--------|----------------|----------------------------------------|
-| GET    | `/`            | Main dashboard HTML                    |
-| GET    | `/api/status`  | JSON: pin levels, global state, WiFi RSSI/channel |
-| GET    | `/api/nodes`   | JSON: roster (role, mac, ip, connected, last_seen, running status) |
-| GET    | `/wifi-setup`  | WiFi credential form (portal only)     |
-| GET    | `/api/scan`    | JSON array of nearby networks (portal only) |
-| POST   | `/wifi-save`   | Save credentials to NVS, restart       |
-| POST   | `/ota/upload`  | Raw binary OTA upload                  |
+| Method | Path                | Description                            |
+|--------|---------------------|-----------------------------------------|
+| GET    | `/`                 | Main dashboard HTML                    |
+| GET    | `/api/status`       | JSON: pin levels, global state, WiFi RSSI/channel |
+| GET    | `/api/nodes`        | JSON: roster (role, fw, mac, ip, has_wifi, rssi, channel, connected, last_seen, running status) |
+| POST   | `/api/honda/start`  | Manual override: force Honda start cmd |
+| POST   | `/api/honda/stop`   | Clear override; recompute from GPIO    |
+| POST   | `/api/wallas/start` | Manual override: force Wallas start cmd|
+| POST   | `/api/wallas/stop`  | Clear override; recompute from GPIO    |
+| GET    | `/wifi-setup`       | WiFi credential form (portal only)     |
+| GET    | `/api/scan`         | JSON array of nearby networks (portal only) |
+| POST   | `/wifi-save`        | Save credentials to NVS, restart       |
+| POST   | `/ota/upload`       | Raw binary OTA upload                  |
 
 ### 6.2 SlaveHonda & SlaveWallas — Two Tabs
 

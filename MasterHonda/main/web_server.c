@@ -26,6 +26,8 @@ static const char *TAG = "web";
 /* ── Shared state from main.c ──────────────────────────────────────────────── */
 extern volatile bool g_honda_start_cmd;
 extern volatile bool g_wallas_start_cmd;
+extern volatile bool g_web_honda_start;
+extern volatile bool g_web_wallas_start;
 extern          bool g_slave_honda_running;
 
 /* Layout must match main.c's slave_info_t exactly (shared via extern, not a header). */
@@ -40,6 +42,9 @@ typedef struct {
     bool     honda_running;
     bool     wallas_running;
     bool     wallas_start_cmd;
+    int8_t   rssi;
+    uint8_t  channel;
+    char     fw_version[12];
 } slave_info_t;
 extern slave_info_t g_slave_honda;
 extern slave_info_t g_slave_wallas;
@@ -136,11 +141,15 @@ static const char INDEX_HTML_TMPL[] =
 "background:#0f3460;border-radius:5px;padding:7px 12px;font-size:.83rem}"
 ".led{width:12px;height:12px;border-radius:50%}"
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
-".cli{background:#0f3460;border-radius:7px;padding:12px;margin-bottom:10px}"
-".cn{font-weight:bold;color:#e94560;margin-bottom:6px;font-size:.88rem}"
-".cr{display:flex;justify-content:space-between;font-size:.82rem;padding:2px 0}"
 ".ok{color:#4caf50}.dim{color:#888}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
+".tbl-wrap{overflow-x:auto}"
+"table.nodes{border-collapse:collapse;width:100%;font-size:.78rem;white-space:nowrap}"
+"table.nodes th,table.nodes td{padding:6px 10px;text-align:left;border-bottom:1px solid #0f3460}"
+"table.nodes th{color:#e94560;font-size:.72rem;text-transform:uppercase}"
+".ctl{display:flex;gap:8px;margin-top:8px}"
+"button.go{flex:1;padding:8px;border:none;border-radius:5px;color:#fff;cursor:pointer;font-size:.85rem}"
+"button.go-on{background:#4caf50}button.go-off{background:#555}"
 ".ota-wrap{background:#fff;border-radius:8px;padding:20px;color:#333}"
 ".ota-wrap h3{color:#e94560;margin-bottom:12px}"
 ".ota-wrap p{font-size:.85rem;color:#555;margin-bottom:14px}"
@@ -158,11 +167,19 @@ static const char INDEX_HTML_TMPL[] =
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Input Pins</h3><div class='grid' id='pins'>…</div></div>"
-"<div class='card'><h3>System State</h3><div class='grid' id='state'>…</div></div>"
+"<div class='card'><h3>System State</h3><div class='grid' id='state'>…</div>"
+"<div class='ctl'>"
+"<button class='go go-on' onclick='cmd(\"honda\",\"start\")'>Start Honda</button>"
+"<button class='go go-off' onclick='cmd(\"honda\",\"stop\")'>Stop Honda</button>"
+"</div>"
+"<div class='ctl'>"
+"<button class='go go-on' onclick='cmd(\"wallas\",\"start\")'>Start Wallas</button>"
+"<button class='go go-off' onclick='cmd(\"wallas\",\"stop\")'>Stop Wallas</button>"
+"</div></div>"
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='nodes' class='pane'>"
-"<div id='cli'>…</div><div class='ts' id='cts'></div></div>"
+"<div class='tbl-wrap' id='cli'>…</div><div class='ts' id='cts'></div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
@@ -180,6 +197,8 @@ static const char INDEX_HTML_TMPL[] =
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
+"function cmd(unit,action){"
+"fetch('/api/'+unit+'/'+action,{method:'POST'}).then(fetchStatus).catch(()=>{});}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
@@ -192,23 +211,27 @@ static const char INDEX_HTML_TMPL[] =
 "txtRow('Signal strength',d.rssi+' dBm')+txtRow('Channel',d.ch);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
-"function nodeHdr(n){"
-"return '<div class=\"cn\">'+n.role+' <span class=\"'+(n.connected?'ok':'dim')+'\">'+"
-"(n.connected?'\\u25CF connected':'\\u25CB disconnected')+'</span></div>'+"
-"'<div class=\"cr\"><span>MAC</span><span>'+(n.mac||'\\u2014 not yet registered')+'</span></div>'+"
-"'<div class=\"cr\"><span>IP</span><span>'+(n.ip||'\\u2014')+'</span></div>'+"
-"'<div class=\"cr\"><span>WiFi</span><span class=\"'+(n.has_wifi?'ok':'dim')+'\">'+(n.has_wifi?'Yes':'No (ESP-NOW only)')+'</span></div>'+"
-"'<div class=\"cr\"><span>Last seen</span><span>'+n.ls+'</span></div>';}"
+"function yn(v){return '<span class=\"'+(v?'ok':'dim')+'\">'+(v?'Yes':'No')+'</span>';}"
+"function nodeRow(n,detail){"
+"return '<tr><td>'+n.role+'</td>'+"
+"'<td>'+(n.fw?'v'+n.fw:'\\u2014')+'</td>'+"
+"'<td>'+(n.mac||'\\u2014')+'</td>'+"
+"'<td>'+(n.ip||'\\u2014')+'</td>'+"
+"'<td>'+yn(n.has_wifi)+'</td>'+"
+"'<td>'+(n.mac?n.rssi+' dBm':'\\u2014')+'</td>'+"
+"'<td>'+(n.mac?n.channel:'\\u2014')+'</td>'+"
+"'<td>'+(n.connected?'<span class=\"ok\">\\u25CF connected</span>':'<span class=\"dim\">\\u25CB disconnected</span>')+'</td>'+"
+"'<td>'+n.ls+'</td>'+"
+"'<td>'+yn(n.ru)+'</td>'+"
+"'<td>'+detail+'</td></tr>';}"
 "function fetchNodes(){"
 "fetch('/api/nodes').then(r=>r.json()).then(d=>{"
-"let h='';"
-"h+='<div class=\"cli\">'+nodeHdr(d.h)+"
-"'<div class=\"cr\"><span>Ignition On</span><span class=\"'+(d.h.ig?'ok':'dim')+'\">'+(d.h.ig?'YES':'No')+'</span></div>'+"
-"'<div class=\"cr\"><span>Starting</span><span class=\"'+(d.h.st?'ok':'dim')+'\">'+(d.h.st?'YES':'No')+'</span></div>'+"
-"'<div class=\"cr\"><span>Running</span><span class=\"'+(d.h.ru?'ok':'dim')+'\">'+(d.h.ru?'YES':'No')+'</span></div></div>';"
-"h+='<div class=\"cli\">'+nodeHdr(d.w)+"
-"'<div class=\"cr\"><span>Running</span><span class=\"'+(d.w.ru?'ok':'dim')+'\">'+(d.w.ru?'YES':'No')+'</span></div>'+"
-"'<div class=\"cr\"><span>Start CMD</span><span class=\"'+(d.w.sc?'ok':'dim')+'\">'+(d.w.sc?'YES':'No')+'</span></div></div>';"
+"let h='<table class=\"nodes\"><tr>"
+"<th>Role</th><th>FW</th><th>MAC</th><th>IP</th><th>WiFi</th><th>RSSI</th><th>Ch</th>"
+"<th>Status</th><th>Last seen</th><th>Running</th><th>Detail</th></tr>';"
+"h+=nodeRow(d.h,'Ign:'+(d.h.ig?'Y':'N')+' Starting:'+(d.h.st?'Y':'N'));"
+"h+=nodeRow(d.w,'Start CMD:'+(d.w.sc?'Y':'N'));"
+"h+='</table>';"
 "document.getElementById('cli').innerHTML=h;"
 "document.getElementById('cts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
@@ -310,23 +333,64 @@ static esp_err_t h_nodes(httpd_req_t *req)
     fmt_mac(mach, sizeof(mach), &g_slave_honda);
     fmt_mac(macw, sizeof(macw), &g_slave_wallas);
 
-    char buf[512];
+    char buf[700];
     snprintf(buf, sizeof(buf),
         "{\"h\":{\"role\":\"SlaveHonda\",\"mac\":\"%s\",\"ip\":\"%s\",\"has_wifi\":%s,"
+        "\"rssi\":%d,\"channel\":%d,\"fw\":\"%s\","
         "\"connected\":%s,\"ls\":\"%s\",\"ig\":%s,\"st\":%s,\"ru\":%s},"
         "\"w\":{\"role\":\"SlaveWallas\",\"mac\":\"%s\",\"ip\":\"%s\",\"has_wifi\":%s,"
+        "\"rssi\":%d,\"channel\":%d,\"fw\":\"%s\","
         "\"connected\":%s,\"ls\":\"%s\",\"ru\":%s,\"sc\":%s}}",
         mach, g_slave_honda.ip, g_slave_honda.has_wifi ? "true":"false",
+        (int)g_slave_honda.rssi, (int)g_slave_honda.channel, g_slave_honda.fw_version,
         node_connected(&g_slave_honda) ? "true":"false", lsh,
         g_slave_honda.honda_ign_on   ? "true":"false",
         g_slave_honda.honda_starting ? "true":"false",
         g_slave_honda.honda_running  ? "true":"false",
         macw, g_slave_wallas.ip, g_slave_wallas.has_wifi ? "true":"false",
+        (int)g_slave_wallas.rssi, (int)g_slave_wallas.channel, g_slave_wallas.fw_version,
         node_connected(&g_slave_wallas) ? "true":"false", lsw,
         g_slave_wallas.wallas_running  ? "true":"false",
         g_slave_wallas.wallas_start_cmd? "true":"false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /api/honda/start | /api/honda/stop | /api/wallas/start | /api/wallas/stop
+ * Manual web override — a third command source OR'd in with the Victron
+ * relay and physical manual button (see g_web_honda_start/g_web_wallas_start
+ * in main.c). Recomputes the combined command immediately so the UI doesn't
+ * have to wait for a GPIO edge. */
+static esp_err_t h_honda_start(httpd_req_t *req)
+{
+    g_web_honda_start = true;
+    g_honda_start_cmd = true;
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+static esp_err_t h_honda_stop(httpd_req_t *req)
+{
+    g_web_honda_start = false;
+    g_honda_start_cmd = gpio_get_level(PIN_HONDA_MANUAL_START) || !gpio_get_level(PIN_HONDA_START);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+static esp_err_t h_wallas_start(httpd_req_t *req)
+{
+    g_web_wallas_start = true;
+    g_wallas_start_cmd = true;
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+static esp_err_t h_wallas_stop(httpd_req_t *req)
+{
+    g_web_wallas_start = false;
+    g_wallas_start_cmd = gpio_get_level(PIN_WALLAS_START) || !gpio_get_level(PIN_WALLAS_MANUAL_START);
+    httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
 
@@ -476,7 +540,7 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 8;
+    cfg.max_uri_handlers = 12;
     cfg.stack_size       = 8192;
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -485,13 +549,17 @@ esp_err_t web_server_start(void)
     }
 
     static const httpd_uri_t routes[] = {
-        { .uri="/",           .method=HTTP_GET,  .handler=h_root       },
-        { .uri="/api/status", .method=HTTP_GET,  .handler=h_status     },
-        { .uri="/api/nodes",  .method=HTTP_GET,  .handler=h_nodes      },
-        { .uri="/wifi-setup", .method=HTTP_GET,  .handler=h_wifi_setup },
-        { .uri="/wifi-save",  .method=HTTP_POST, .handler=h_wifi_save  },
-        { .uri="/api/scan",   .method=HTTP_GET,  .handler=h_scan       },
-        { .uri="/ota/upload", .method=HTTP_POST, .handler=h_ota_upload },
+        { .uri="/",                .method=HTTP_GET,  .handler=h_root        },
+        { .uri="/api/status",      .method=HTTP_GET,  .handler=h_status      },
+        { .uri="/api/nodes",       .method=HTTP_GET,  .handler=h_nodes       },
+        { .uri="/api/honda/start", .method=HTTP_POST, .handler=h_honda_start },
+        { .uri="/api/honda/stop",  .method=HTTP_POST, .handler=h_honda_stop  },
+        { .uri="/api/wallas/start",.method=HTTP_POST, .handler=h_wallas_start},
+        { .uri="/api/wallas/stop", .method=HTTP_POST, .handler=h_wallas_stop },
+        { .uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },
+        { .uri="/wifi-save",       .method=HTTP_POST, .handler=h_wifi_save   },
+        { .uri="/api/scan",        .method=HTTP_GET,  .handler=h_scan        },
+        { .uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         httpd_register_uri_handler(server, &routes[i]);

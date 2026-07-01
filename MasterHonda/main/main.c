@@ -77,6 +77,9 @@ typedef struct {
     bool  HondaRunning;
     char  ip[16];
     bool  has_wifi;
+    int8_t  rssi;
+    uint8_t channel;
+    char    fw_version[12];
 } slave_honda_msg_t;
 
 typedef struct {
@@ -85,12 +88,21 @@ typedef struct {
     bool  WallasStart;
     char  ip[16];
     bool  has_wifi;
+    int8_t  rssi;
+    uint8_t channel;
+    char    fw_version[12];
 } slave_wallas_msg_t;
 
 /* ── Global State (written from ISR + read from task) ──────────────────────── */
 volatile bool g_honda_start_cmd  = false;
 volatile bool g_wallas_start_cmd = false;
          bool g_slave_honda_running = false;
+
+/* Web UI manual-start override — a third source OR'd in alongside the Victron
+ * relay and physical manual button. Set/cleared by web_server.c's
+ * /api/honda/start|stop and /api/wallas/start|stop handlers. */
+volatile bool g_web_honda_start  = false;
+volatile bool g_web_wallas_start = false;
 
 /* ── Slave Roster (populated dynamically by ESP-NOW recv callback) ─────────── */
 typedef struct {
@@ -104,6 +116,9 @@ typedef struct {
     bool     honda_running;
     bool     wallas_running;
     bool     wallas_start_cmd;
+    int8_t   rssi;
+    uint8_t  channel;
+    char     fw_version[12];
 } slave_info_t;
 
 slave_info_t g_slave_honda  = {0};
@@ -296,7 +311,10 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
             g_slave_honda.honda_starting = msg.HondaStarting;
             g_slave_honda.honda_running  = msg.HondaRunning;
             g_slave_honda.has_wifi       = msg.has_wifi;
+            g_slave_honda.rssi           = msg.rssi;
+            g_slave_honda.channel        = msg.channel;
             strlcpy(g_slave_honda.ip, msg.ip, sizeof(g_slave_honda.ip));
+            strlcpy(g_slave_honda.fw_version, msg.fw_version, sizeof(g_slave_honda.fw_version));
             g_slave_honda_running = msg.HondaRunning;
             gpio_set_level(PIN_HONDA_STARTED_FB, msg.HondaRunning ? 1 : 0);
             return;
@@ -310,7 +328,10 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
             g_slave_wallas.last_seen_us  = esp_timer_get_time();
             g_slave_wallas.wallas_running = msg.WallasRunning;
             g_slave_wallas.has_wifi       = msg.has_wifi;
+            g_slave_wallas.rssi           = msg.rssi;
+            g_slave_wallas.channel        = msg.channel;
             strlcpy(g_slave_wallas.ip, msg.ip, sizeof(g_slave_wallas.ip));
+            strlcpy(g_slave_wallas.fw_version, msg.fw_version, sizeof(g_slave_wallas.fw_version));
         }
     }
 }
@@ -360,19 +381,19 @@ static void send_to_wallas(void)
 static void IRAM_ATTR isr_honda_start(void *arg)
 {
     g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
-                         !gpio_get_level(PIN_HONDA_START));
+                         !gpio_get_level(PIN_HONDA_START) || g_web_honda_start);
 }
 static void IRAM_ATTR isr_honda_manual(void *arg)
 {
-    g_honda_start_cmd = gpio_get_level(PIN_HONDA_MANUAL_START);
+    g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) || g_web_honda_start);
 }
 static void IRAM_ATTR isr_wallas_start(void *arg)
 {
-    g_wallas_start_cmd = gpio_get_level(PIN_WALLAS_START);
+    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) || g_web_wallas_start);
 }
 static void IRAM_ATTR isr_wallas_manual(void *arg)
 {
-    g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_MANUAL_START);
+    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_MANUAL_START) || g_web_wallas_start);
 }
 
 static void gpio_init(void)

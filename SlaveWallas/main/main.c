@@ -73,6 +73,9 @@ typedef struct {
     bool  WallasStart;
     char  ip[16];
     bool  has_wifi;
+    int8_t  rssi;      /* RSSI of last frame heard from MasterHonda, dBm */
+    uint8_t channel;   /* channel that frame was received on */
+    char    fw_version[12];
 } slave_wallas_msg_t;
 
 /* ── Global State ────────────────────────────────────────────────────────────── */
@@ -82,6 +85,8 @@ volatile bool g_start_cmd     = false;
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
 static bool    s_master_known   = false;
+static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterHonda */
+static uint8_t s_link_channel   = 0;
 
 /* ── WiFi ────────────────────────────────────────────────────────────────────── */
 #define WIFI_CONNECTED_BIT BIT0
@@ -213,6 +218,9 @@ static void send_status(void) {
     msg.WallasRunning = g_wallas_running;
     msg.WallasStart   = g_start_cmd;
     msg.has_wifi      = true;   /* WiFi is mandatory for this unit */
+    msg.rssi          = s_link_rssi;
+    msg.channel       = s_link_channel;
+    strlcpy(msg.fw_version, FIRMWARE_VERSION, sizeof(msg.fw_version));
     get_ip_str(msg.ip, sizeof(msg.ip));
     esp_now_send(s_master_mac, (uint8_t *)&msg, sizeof(msg));
 }
@@ -222,6 +230,11 @@ static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_stat
 static void espnow_recv_cb(const esp_now_recv_info_t *info,
                            const uint8_t *data, int len)
 {
+    if (info->rx_ctrl) {
+        s_link_rssi    = info->rx_ctrl->rssi;
+        s_link_channel = info->rx_ctrl->channel;
+    }
+
     if (len == (int)sizeof(master_beacon_t)) {
         master_beacon_t beacon;
         memcpy(&beacon, data, sizeof(beacon));
