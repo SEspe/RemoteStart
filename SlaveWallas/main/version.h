@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "1.2.1"
+#define FIRMWARE_VERSION    "1.3.0"
 #define FIRMWARE_NAME       "SlaveWallas"
 #define WIFI_AP_SSID        "SlaveWallas-Config"
 #define WIFI_AP_PASSWORD    "honda1234"

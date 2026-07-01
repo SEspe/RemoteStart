@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.7  
+**Version:** 1.8  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.8 — SlaveWallas: corrected stale pin labels on the Status tab (relay was still labeled "p0" after the GPIO0→16 move, feedback still labeled "p13" after the GPIO13→18 move — display-only, the underlying GPIO defines were already correct). Added a **Debug GPIO** tab: `GET /api/gpio/set?pin=N&level=0|1` reconfigures any non-reserved GPIO (0,1,2,3,6,7,10,11,14,16-23; strapping pins 4/5/8/9/15 and USB-JTAG 12/13 excluded) to OUTPUT and drives it, for hardware bring-up when physical pin wiring is uncertain. Overrides normal operation of that pin until reboot — hardware debug only, not for production use.
 - v1.7 — Fixed a heap buffer overflow in `h_root()` on all three units: the `%IP%` template placeholder (4 chars) was replaced in-place via `memmove`/`memcpy` inside a buffer sized only for the original template (`strdup()`), so any IP string longer than 4 characters (i.e. almost any real IP) overflowed the allocation, corrupting the heap and crashing the device shortly after — usually visible as the TCP connection to `/` resetting mid-response, while smaller endpoints like `/api/status` kept working fine. Rewritten to build the substituted page into a freshly, exactly-sized buffer instead of mutating a fixed-size one in place. Discovered because SlaveHonda's root page happened to work (no WiFi IP → 1-char `"?"` placeholder, which shrinks rather than overflows) while SlaveWallas's (a real IP) reliably crashed on load.
 - v1.6 — Slave heartbeats (`slave_msg_t`/`slave_wallas_msg_t`) now carry per-link RSSI, channel, and firmware version, sourced from the receiving radio's `rx_ctrl` on the last frame heard from MasterHonda (works whether or not the slave has its own WiFi/AP association). MasterHonda's Nodes tab is redesigned as a table (one row per node, RSSI/Channel/FW columns) instead of stacked cards, and the Pin Status tab gains manual **Start/Stop Honda** and **Start/Stop Wallas** buttons — a third command source OR'd in alongside the Victron relay and physical manual buttons via new `/api/honda/start\|stop` and `/api/wallas/start\|stop` endpoints. **Breaking change** (message struct sizes changed) — all three units must be upgraded together, same as §3.2.
 - v1.5 — Fixed an OTA upload bug on all three units: `h_ota_upload()` retried `httpd_req_recv()` forever on a timeout instead of giving up, so a client aborting mid-upload could permanently wedge the httpd worker (and, since there's only one, the entire web server) until a USB reflash. Now bounded to 5 consecutive timeouts before aborting cleanly. SlaveWallas: moved `PIN_WALLAS_FB` off GPIO13 (reserved for native USB-Serial/JTAG D+, §2.4) to GPIO18.
@@ -342,18 +343,21 @@ HTTP endpoints:
 | POST   | `/wifi-save`        | Save credentials to NVS, restart       |
 | POST   | `/ota/upload`       | Raw binary OTA upload                  |
 
-### 6.2 SlaveHonda & SlaveWallas — Two Tabs
+### 6.2 SlaveHonda & SlaveWallas — Local Web UI
 
 Access at: `http://<Slave-IP>/`
 
-| Tab        | Content                                               | Refresh  |
-|------------|-------------------------------------------------------|----------|
-| Status     | Relay states, running feedback, last received command | 2 s auto |
-| OTA Update | File input + XHR upload to `/ota/upload`              | Manual   |
+| Tab        | Content                                               | Refresh  | Units |
+|------------|--------------------------------------------------------|----------|-------|
+| Status     | Relay states, running feedback, last received command | 2 s auto | Both  |
+| Debug GPIO | Manual ON/OFF test of any non-reserved GPIO (hardware bring-up) | Manual | SlaveWallas only |
+| OTA Update | File input + XHR upload to `/ota/upload`              | Manual   | Both  |
 
-HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
+HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload` on both units; SlaveWallas additionally has `GET /api/gpio/set?pin=N&level=0|1`.
 
 > **SlaveHonda in ESP-NOW fallback (§3.2):** the unit has no IP address while WiFi-less, so its own web UI (and OTA) is unreachable in that state. Its status is only visible remotely via MasterHonda's Nodes tab (§6.1). To OTA-update SlaveHonda, it must be within WiFi range at boot (or reachable via the config portal) at least once.
+
+> **Debug GPIO (SlaveWallas only, §11):** `/api/gpio/set` unconditionally calls `gpio_reset_pin()` + `gpio_set_direction(OUTPUT)` + `gpio_set_level()` on whatever pin number is given, for physically verifying wiring when pin assignments are uncertain. It has no awareness of what a pin is normally used for — toggling GPIO16 (relay), GPIO18 (feedback input), GPIO2, or GPIO23 (LEDs) here overrides the unit's normal control of that pin until the next reboot. Not gated behind any confirmation; intended for hardware bring-up sessions only, not left exposed in a production deployment.
 
 ### 6.3 Status JSON format
 

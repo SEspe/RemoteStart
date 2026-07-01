@@ -1,10 +1,11 @@
 /*
  * SlaveWallas web_server.c
- * Serves: WiFi setup portal, status API, OTA upload.
- * Two-tab UI: Status | OTA Update
+ * Serves: WiFi setup portal, status API, debug GPIO test, OTA upload.
+ * Three-tab UI: Status | Debug GPIO | OTA Update
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <sys/param.h>
@@ -112,6 +113,13 @@ static const char INDEX_HTML[] =
 ".led{width:12px;height:12px;border-radius:50%}"
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
+".warn{font-size:.78rem;color:#e9b400;margin-bottom:10px}"
+".dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}"
+".dbg .row{flex-direction:column;align-items:stretch;gap:4px}"
+".dbg .row>span:first-child{text-align:center;font-weight:bold}"
+".btns{display:flex;gap:4px}"
+"button.go{flex:1;padding:6px;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:.78rem}"
+"button.go-on{background:#4caf50}button.go-off{background:#555}"
 ".ota-wrap{background:#fff;border-radius:8px;padding:20px;color:#333}"
 ".ota-wrap h3{color:#e94560;margin-bottom:12px}"
 ".ota-wrap p{font-size:.85rem;color:#555;margin-bottom:14px}"
@@ -124,11 +132,18 @@ static const char INDEX_HTML[] =
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Status</button>"
+"<button class='tab' onclick='show(\"debug\",this)'>Debug GPIO</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Wallas Heater</h3><div class='grid' id='pins'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
+"<div id='debug' class='pane'>"
+"<div class='card'><h3>Manual GPIO Test</h3>"
+"<p class='warn'>Hardware bring-up only. Forces a pin to OUTPUT and drives it "
+"high/low, overriding normal operation until next reboot. Reserved pins "
+"(strapping: 4,5,8,9,15; USB-JTAG: 12,13) are not listed.</p>"
+"<div class='dbg' id='dbg'>…</div></div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
@@ -148,10 +163,19 @@ static const char INDEX_HTML[] =
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
-"row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p0)',d.relay)+"
-"row('Wallas Running FB (p13)',d.run);"
+"row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p16)',d.relay)+"
+"row('Wallas Running FB (p18)',d.run);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
+"var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
+"function buildDbg(){"
+"var h='';"
+"DBG_PINS.forEach(function(p){"
+"h+='<div class=\"row\"><span>GPIO'+p+'</span>"
+"<span class=\"btns\"><button class=\"go go-on\" onclick=\"gset('+p+',1)\">ON</button>"
+"<button class=\"go go-off\" onclick=\"gset('+p+',0)\">OFF</button></span></div>';});"
+"document.getElementById('dbg').innerHTML=h;}"
+"function gset(pin,level){fetch('/api/gpio/set?pin='+pin+'&level='+level).catch(()=>{});}"
 "function upload(){"
 "const f=document.getElementById('fw').files[0];"
 "if(!f){document.getElementById('prog').textContent='Select a .bin file first';return;}"
@@ -168,6 +192,7 @@ static const char INDEX_HTML[] =
 "if(document.getElementById('status').classList.contains('on'))fetchStatus();"
 "},2000);"
 "fetchStatus();"
+"buildDbg();"
 "</script></body></html>";
 
 /* ── Handlers ────────────────────────────────────────────────────────────────── */
@@ -265,6 +290,32 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/gpio/set?pin=N&level=0|1  ── DEBUG ONLY: force any non-reserved
+ * GPIO to OUTPUT and drive it. For hardware bring-up when pin wiring is
+ * uncertain -- reconfigures the pin every call, overriding whatever normal
+ * operation was doing with it until the next reboot. */
+static esp_err_t h_gpio_set(httpd_req_t *req)
+{
+    char query[64] = {0}, pin_str[8] = {0}, lvl_str[8] = {0};
+    int pin = -1, level = -1;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "pin", pin_str, sizeof(pin_str)) == ESP_OK)
+            pin = atoi(pin_str);
+        if (httpd_query_key_value(query, "level", lvl_str, sizeof(lvl_str)) == ESP_OK)
+            level = atoi(lvl_str);
+    }
+    if (pin < 0 || pin > 30 || (level != 0 && level != 1)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad pin/level");
+        return ESP_OK;
+    }
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, level);
+    ESP_LOGW(TAG, "DEBUG: forced GPIO%d = %d", pin, level);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 /* GET /api/scan  ── WiFi scan, returns JSON array */
 static esp_err_t h_scan(httpd_req_t *req)
 {
@@ -321,15 +372,16 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server=NULL;
     httpd_config_t cfg=HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers=6; cfg.stack_size=6144;
+    cfg.max_uri_handlers=8; cfg.stack_size=6144;
     if (httpd_start(&server,&cfg) != ESP_OK) { ESP_LOGE(TAG,"Start failed"); return ESP_FAIL; }
     static const httpd_uri_t routes[]={
-        {.uri="/",           .method=HTTP_GET,  .handler=h_root      },
-        {.uri="/api/status", .method=HTTP_GET,  .handler=h_status    },
-        {.uri="/wifi-setup", .method=HTTP_GET,  .handler=h_wifi_setup},
-        {.uri="/wifi-save",  .method=HTTP_POST, .handler=h_wifi_save },
-        {.uri="/api/scan",   .method=HTTP_GET,  .handler=h_scan      },
-        {.uri="/ota/upload", .method=HTTP_POST, .handler=h_ota_upload},
+        {.uri="/",             .method=HTTP_GET,  .handler=h_root      },
+        {.uri="/api/status",   .method=HTTP_GET,  .handler=h_status    },
+        {.uri="/api/gpio/set", .method=HTTP_GET,  .handler=h_gpio_set  },
+        {.uri="/wifi-setup",   .method=HTTP_GET,  .handler=h_wifi_setup},
+        {.uri="/wifi-save",    .method=HTTP_POST, .handler=h_wifi_save },
+        {.uri="/api/scan",     .method=HTTP_GET,  .handler=h_scan      },
+        {.uri="/ota/upload",   .method=HTTP_POST, .handler=h_ota_upload},
     };
     for(size_t i=0;i<sizeof(routes)/sizeof(routes[0]);i++)
         httpd_register_uri_handler(server,&routes[i]);
