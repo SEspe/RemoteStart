@@ -98,6 +98,8 @@ static uint8_t s_master_mac[6]  = {0};
 static bool    s_master_known   = false;
 static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterRemote */
 static uint8_t s_link_channel   = 0;
+static int64_t s_master_last_seen_us = 0;
+#define MASTER_STALE_US  ((int64_t)30000 * 1000)   /* matches Master's own NODE_TIMEOUT_MS */
 
 /* ── WiFi ────────────────────────────────────────────────────────────────────── */
 #define WIFI_CONNECTED_BIT BIT0
@@ -272,17 +274,37 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
     if (len == (int)sizeof(master_beacon_t)) {
         master_beacon_t beacon;
         memcpy(&beacon, data, sizeof(beacon));
-        if (strncmp(beacon.label, "MasterRemote", 12) == 0 &&
-            (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0)) {
-            memcpy(s_master_mac, info->src_addr, 6);
-            espnow_add_peer(s_master_mac);
-            s_master_known = true;
-            ESP_LOGI(TAG, "Master found: " MACSTR, MAC2STR(s_master_mac));
-            send_status();   /* immediate registration heartbeat */
+        if (strncmp(beacon.label, "MasterRemote", 12) != 0) return;
+
+        bool is_current_master = s_master_known && memcmp(info->src_addr, s_master_mac, 6) == 0;
+        if (is_current_master) {
+            s_master_last_seen_us = esp_timer_get_time();
+            return;
         }
+        bool master_stale = !s_master_known ||
+            (esp_timer_get_time() - s_master_last_seen_us) > MASTER_STALE_US;
+        if (!master_stale) {
+            /* A different MAC is claiming to be MasterRemote while our current
+             * one is still active -- ignore it rather than blindly re-homing
+             * trust (see FSD §3.2 / §12). */
+            ESP_LOGW(TAG, "Ignoring beacon from " MACSTR " -- current Master still active",
+                     MAC2STR(info->src_addr));
+            return;
+        }
+        memcpy(s_master_mac, info->src_addr, 6);
+        espnow_add_peer(s_master_mac);
+        s_master_known = true;
+        s_master_last_seen_us = esp_timer_get_time();
+        ESP_LOGI(TAG, "Master found: " MACSTR, MAC2STR(s_master_mac));
+        send_status();   /* immediate registration heartbeat */
         return;
     }
     if (len != (int)sizeof(master_msg_t)) return;
+    if (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0) {
+        ESP_LOGW(TAG, "Ignoring command from unrecognized sender " MACSTR, MAC2STR(info->src_addr));
+        return;   /* not from the registered Master -- ignore */
+    }
+    s_master_last_seen_us = esp_timer_get_time();
     master_msg_t msg;
     memcpy(&msg, data, sizeof(msg));
     ESP_LOGI(TAG, "Recv HondaStart=%d", msg.HondaStart);

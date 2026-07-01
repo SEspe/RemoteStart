@@ -287,22 +287,31 @@ static void espnow_add_peer(const uint8_t *mac)
         ESP_LOGE(TAG, "Failed to add peer " MACSTR, MAC2STR(mac));
 }
 
-/* Register (or re-register, if the MAC changed — e.g. hardware swap) a slave's
- * real MAC as an ESP-NOW peer. See FSD §3.2. */
-static void register_peer(slave_info_t *info, const uint8_t *mac)
+static bool node_connected(const slave_info_t *info)
 {
-    if (info->peer_added && memcmp(info->mac, mac, 6) == 0) return;
+    return info->peer_added &&
+           (esp_timer_get_time() - info->last_seen_us) < (int64_t)NODE_TIMEOUT_MS * 1000;
+}
+
+/* Register (or re-register, if the MAC changed — e.g. hardware swap) a slave's
+ * real MAC as an ESP-NOW peer. Refuses to hand the role to a new MAC while the
+ * current holder is still active (within NODE_TIMEOUT_MS) -- closes the door
+ * on a rogue sender hijacking a role by simply sending the right label/size.
+ * Returns false if the claim was rejected. See FSD §3.2 / §12. */
+static bool register_peer(slave_info_t *info, const uint8_t *mac)
+{
+    if (info->peer_added && memcmp(info->mac, mac, 6) == 0) return true;
+    if (info->peer_added && node_connected(info)) {
+        ESP_LOGW(TAG, "Ignoring role claim from " MACSTR " -- still held by " MACSTR,
+                 MAC2STR(mac), MAC2STR(info->mac));
+        return false;
+    }
     if (info->peer_added) esp_now_del_peer(info->mac);
     espnow_add_peer(mac);
     memcpy(info->mac, mac, 6);
     info->peer_added = true;
     ESP_LOGI(TAG, "Registered peer " MACSTR, MAC2STR(mac));
-}
-
-static bool node_connected(const slave_info_t *info)
-{
-    return info->peer_added &&
-           (esp_timer_get_time() - info->last_seen_us) < (int64_t)NODE_TIMEOUT_MS * 1000;
+    return true;
 }
 
 static void espnow_recv_cb(const esp_now_recv_info_t *info,
@@ -314,7 +323,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         slave_honda_msg_t msg;
         memcpy(&msg, data, sizeof(msg));
         if (strncmp(msg.label, "SlaveHonda", 10) == 0) {
-            register_peer(&g_slave_honda, src);
+            if (!register_peer(&g_slave_honda, src)) return;
             g_slave_honda.last_seen_us   = esp_timer_get_time();
             g_slave_honda.honda_ign_on   = msg.HondaIgnitionOn;
             g_slave_honda.honda_starting = msg.HondaStarting;
@@ -333,7 +342,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         slave_wallas_msg_t msg;
         memcpy(&msg, data, sizeof(msg));
         if (strncmp(msg.label, "SlaveWallas", 11) == 0) {
-            register_peer(&g_slave_wallas, src);
+            if (!register_peer(&g_slave_wallas, src)) return;
             g_slave_wallas.last_seen_us  = esp_timer_get_time();
             g_slave_wallas.wallas_running = msg.WallasRunning;
             g_slave_wallas.has_wifi       = msg.has_wifi;
