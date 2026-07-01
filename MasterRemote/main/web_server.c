@@ -1,10 +1,11 @@
 /*
  * MasterRemote web_server.c
- * Serves: WiFi setup portal, pin status API, nodes API, OTA upload.
- * Three-tab UI: Pin Status | Nodes | OTA Update
+ * Serves: WiFi setup portal, pin status API, nodes API, weekly timer API, OTA upload.
+ * Four-tab UI: Pin Status | Nodes | Weekly Timer | OTA Update
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <stdbool.h>
 #include <sys/param.h>
@@ -29,7 +30,14 @@ extern volatile bool g_wallas_start_cmd;
 extern volatile bool g_web_honda_start;
 extern volatile bool g_web_wallas_start;
 extern volatile bool g_honda_force_send;
+extern volatile bool g_timer_wallas_start;
 extern          bool g_slave_honda_running;
+
+/* Weekly Wallas timer accessors (function interface, see main.c) */
+extern void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm);
+extern void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_hh, int stop_mm);
+extern bool timer_is_synced(void);
+extern void timer_get_now_str(char *buf, size_t sz);
 
 /* Layout must match main.c's slave_info_t exactly (shared via extern, not a header). */
 typedef struct {
@@ -151,6 +159,9 @@ static const char INDEX_HTML_TMPL[] =
 ".ctl{display:flex;gap:8px;margin-top:8px}"
 "button.go{flex:1;padding:8px;border:none;border-radius:5px;color:#fff;cursor:pointer;font-size:.85rem}"
 "button.go-on{background:#4caf50}button.go-off{background:#555}"
+"table.nodes input[type=time]{background:#0f3460;border:1px solid #444;color:#eee;"
+"border-radius:4px;padding:3px 5px;font-size:.78rem}"
+"table.nodes input[type=checkbox]{width:16px;height:16px}"
 ".ota-wrap{background:#fff;border-radius:8px;padding:20px;color:#333}"
 ".ota-wrap h3{color:#e94560;margin-bottom:12px}"
 ".ota-wrap p{font-size:.85rem;color:#555;margin-bottom:14px}"
@@ -164,6 +175,7 @@ static const char INDEX_HTML_TMPL[] =
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Pin Status</button>"
 "<button class='tab' onclick='show(\"nodes\",this)'>Nodes</button>"
+"<button class='tab' onclick='show(\"timer\",this)'>Weekly Timer</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
@@ -181,6 +193,11 @@ static const char INDEX_HTML_TMPL[] =
 "<div class='ts' id='sts'></div></div>"
 "<div id='nodes' class='pane'>"
 "<div class='tbl-wrap' id='cli'>…</div><div class='ts' id='cts'></div></div>"
+"<div id='timer' class='pane'>"
+"<div class='card'><h3>Weekly Wallas Timer</h3>"
+"<p class='warn' id='clock'>Clock: …</p>"
+"<div class='tbl-wrap'><table class='nodes' id='timerTbl'>…</table></div>"
+"</div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
@@ -194,12 +211,35 @@ static const char INDEX_HTML_TMPL[] =
 "function show(id,btn){"
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
-"document.getElementById(id).classList.add('on');btn.classList.add('on');}"
+"document.getElementById(id).classList.add('on');btn.classList.add('on');"
+"if(id==='timer')fetchTimer();}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
 "function cmd(unit,action){"
 "fetch('/api/'+unit+'/'+action,{method:'POST'}).then(fetchStatus).catch(()=>{});}"
+"var DAY_NAMES=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];"
+"function buildTimer(){"
+"let h='<tr><th>Day</th><th>Enabled</th><th>Start</th><th>Stop</th></tr>';"
+"for(let d=0;d<7;d++){"
+"h+='<tr><td>'+DAY_NAMES[d]+'</td>'+"
+"'<td><input type=\"checkbox\" id=\"ten'+d+'\" onchange=\"saveTimer('+d+')\"></td>'+"
+"'<td><input type=\"time\" id=\"tst'+d+'\" onchange=\"saveTimer('+d+')\"></td>'+"
+"'<td><input type=\"time\" id=\"tsp'+d+'\" onchange=\"saveTimer('+d+')\"></td></tr>';}"
+"document.getElementById('timerTbl').innerHTML=h;}"
+"function fetchTimer(){"
+"fetch('/api/timer').then(r=>r.json()).then(d=>{"
+"document.getElementById('clock').textContent='Clock: '+d.now+' (CET/CEST)'+(d.synced?'':' \\u2014 NOT SYNCED YET');"
+"d.days.forEach(function(x){"
+"document.getElementById('ten'+x.day).checked=x.enabled;"
+"document.getElementById('tst'+x.day).value=x.start;"
+"document.getElementById('tsp'+x.day).value=x.stop;});"
+"}).catch(()=>{});}"
+"function saveTimer(d){"
+"const en=document.getElementById('ten'+d).checked?1:0;"
+"const st=document.getElementById('tst'+d).value||'00:00';"
+"const sp=document.getElementById('tsp'+d).value||'00:00';"
+"fetch('/api/timer/set?day='+d+'&enabled='+en+'&start='+st+'&stop='+sp,{method:'POST'}).catch(()=>{});}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
@@ -253,6 +293,8 @@ static const char INDEX_HTML_TMPL[] =
 "if(document.getElementById('nodes').classList.contains('on'))fetchNodes();"
 "},2000);"
 "fetchStatus();"
+"buildTimer();"
+"fetchTimer();"
 "</script></body></html>";
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
@@ -400,7 +442,55 @@ static esp_err_t h_wallas_start(httpd_req_t *req)
 static esp_err_t h_wallas_stop(httpd_req_t *req)
 {
     g_web_wallas_start = false;
-    g_wallas_start_cmd = gpio_get_level(PIN_WALLAS_START) || !gpio_get_level(PIN_WALLAS_MANUAL_START);
+    g_wallas_start_cmd = gpio_get_level(PIN_WALLAS_START) || !gpio_get_level(PIN_WALLAS_MANUAL_START) || g_timer_wallas_start;
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* GET /api/timer  ── current clock + all 7 days' weekly Wallas timer config */
+static esp_err_t h_timer_get(httpd_req_t *req)
+{
+    char now_str[24];
+    timer_get_now_str(now_str, sizeof(now_str));
+
+    char buf[900];
+    int n = snprintf(buf, sizeof(buf), "{\"now\":\"%s\",\"synced\":%s,\"days\":[",
+                      now_str, timer_is_synced() ? "true" : "false");
+    for (int d = 0; d < 7 && n < (int)sizeof(buf) - 80; d++) {
+        bool en; int sh, sm, ph, pm;
+        timer_get_day(d, &en, &sh, &sm, &ph, &pm);
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      "%s{\"day\":%d,\"enabled\":%s,\"start\":\"%02d:%02d\",\"stop\":\"%02d:%02d\"}",
+                      d ? "," : "", d, en ? "true" : "false", sh, sm, ph, pm);
+    }
+    snprintf(buf + n, sizeof(buf) - n, "]}");
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /api/timer/set?day=N&enabled=0|1&start=HH:MM&stop=HH:MM  ── save one day */
+static esp_err_t h_timer_set(httpd_req_t *req)
+{
+    char query[96] = {0};
+    char day_str[4] = {0}, en_str[4] = {0}, start_str[8] = {0}, stop_str[8] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing query");
+        return ESP_OK;
+    }
+    httpd_query_key_value(query, "day",     day_str,   sizeof(day_str));
+    httpd_query_key_value(query, "enabled", en_str,    sizeof(en_str));
+    httpd_query_key_value(query, "start",   start_str, sizeof(start_str));
+    httpd_query_key_value(query, "stop",    stop_str,  sizeof(stop_str));
+
+    int day = atoi(day_str);
+    bool enabled = atoi(en_str) != 0;
+    int start_hh = 0, start_mm = 0, stop_hh = 0, stop_mm = 0;
+    sscanf(start_str, "%d:%d", &start_hh, &start_mm);
+    sscanf(stop_str,  "%d:%d", &stop_hh,  &stop_mm);
+
+    timer_set_day(day, enabled, start_hh, start_mm, stop_hh, stop_mm);
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -551,7 +641,7 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 12;
+    cfg.max_uri_handlers = 14;
     cfg.stack_size       = 8192;
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -567,6 +657,8 @@ esp_err_t web_server_start(void)
         { .uri="/api/honda/stop",  .method=HTTP_POST, .handler=h_honda_stop  },
         { .uri="/api/wallas/start",.method=HTTP_POST, .handler=h_wallas_start},
         { .uri="/api/wallas/stop", .method=HTTP_POST, .handler=h_wallas_stop },
+        { .uri="/api/timer",       .method=HTTP_GET,  .handler=h_timer_get   },
+        { .uri="/api/timer/set",   .method=HTTP_POST, .handler=h_timer_set   },
         { .uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },
         { .uri="/wifi-save",       .method=HTTP_POST, .handler=h_wifi_save   },
         { .uri="/api/scan",        .method=HTTP_GET,  .handler=h_scan        },

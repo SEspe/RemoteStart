@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -30,6 +31,7 @@
 #include "esp_event.h"
 #include "esp_now.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -112,6 +114,122 @@ volatile bool g_web_wallas_start = false;
  * flag forces one send regardless, bypassing both the mismatch check and
  * the restart-block cooldown, then clears itself. */
 volatile bool g_honda_force_send = false;
+
+/* ── NTP Clock & Weekly Wallas Timer ────────────────────────────────────────── */
+/* Fourth Wallas command source, OR'd in alongside the Victron relay, physical
+ * manual button, and web override. True whenever today's timer is enabled and
+ * the current local time falls within [start, stop). Only ever trusted once
+ * the clock has synced (see NTP_MIN_VALID_EPOCH) -- see FSD §3.2/§12. */
+volatile bool g_timer_wallas_start = false;
+
+#define NTP_MIN_VALID_EPOCH  1704067200   /* 2024-01-01 UTC -- sanity floor so an
+                                            * unsynced clock (epoch ~1970) can never
+                                            * be mistaken for a real time-of-day match */
+#define WALLAS_TZ  "CET-1CEST,M3.5.0,M10.5.0/3"   /* Europe/Oslo, auto DST */
+
+typedef struct {
+    bool    enabled;
+    uint8_t start_hh, start_mm;
+    uint8_t stop_hh,  stop_mm;
+} day_timer_t;
+
+/* Index 0 = Sunday .. 6 = Saturday, matching struct tm.tm_wday directly. */
+static day_timer_t s_wallas_timer[7] = {0};
+static bool        s_ntp_synced      = false;
+
+static void timer_nvs_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    size_t sz = sizeof(s_wallas_timer);
+    nvs_get_blob(h, "walltimer", s_wallas_timer, &sz);   /* leaves defaults (all disabled) if absent */
+    nvs_close(h);
+}
+
+static void timer_nvs_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, "walltimer", s_wallas_timer, sizeof(s_wallas_timer));
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* ── Timer accessors for web_server.c (function interface, not shared struct
+ * layout, so the two files never need to be kept byte-for-byte in sync) ──── */
+void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm)
+{
+    if (day < 0 || day > 6) { *enabled = false; *start_hh = *start_mm = *stop_hh = *stop_mm = 0; return; }
+    const day_timer_t *d = &s_wallas_timer[day];
+    *enabled  = d->enabled;
+    *start_hh = d->start_hh; *start_mm = d->start_mm;
+    *stop_hh  = d->stop_hh;  *stop_mm  = d->stop_mm;
+}
+
+void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_hh, int stop_mm)
+{
+    if (day < 0 || day > 6) return;
+    if (start_hh < 0 || start_hh > 23 || start_mm < 0 || start_mm > 59 ||
+        stop_hh  < 0 || stop_hh  > 23 || stop_mm  < 0 || stop_mm  > 59) return;
+    day_timer_t *d = &s_wallas_timer[day];
+    d->enabled  = enabled;
+    d->start_hh = (uint8_t)start_hh; d->start_mm = (uint8_t)start_mm;
+    d->stop_hh  = (uint8_t)stop_hh;  d->stop_mm  = (uint8_t)stop_mm;
+    timer_nvs_save();
+}
+
+bool timer_is_synced(void) { return s_ntp_synced; }
+
+/* Formats the current local time as "YYYY-MM-DD HH:MM:SS" into buf, or
+ * "not synced" if NTP hasn't completed yet. */
+void timer_get_now_str(char *buf, size_t sz)
+{
+    if (!s_ntp_synced) { snprintf(buf, sz, "not synced"); return; }
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tm_now);
+}
+
+static void ntp_init(void)
+{
+    setenv("TZ", WALLAS_TZ, 1);
+    tzset();
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&cfg);
+}
+
+/* Recomputes g_timer_wallas_start every tick from the current local day/time
+ * against s_wallas_timer. Handles a window that wraps past midnight (e.g.
+ * start 22:00, stop 02:00). Never activates before the clock has synced. */
+static void timer_task(void *arg)
+{
+    for (;;) {
+        time_t now = time(NULL);
+        if (!s_ntp_synced && now >= NTP_MIN_VALID_EPOCH) {
+            s_ntp_synced = true;
+            ESP_LOGI(TAG, "NTP synced");
+        }
+
+        bool active = false;
+        if (s_ntp_synced) {
+            struct tm tm_now;
+            localtime_r(&now, &tm_now);
+            const day_timer_t *d = &s_wallas_timer[tm_now.tm_wday];
+            if (d->enabled) {
+                int cur_min   = tm_now.tm_hour * 60 + tm_now.tm_min;
+                int start_min = d->start_hh * 60 + d->start_mm;
+                int stop_min  = d->stop_hh  * 60 + d->stop_mm;
+                active = (start_min <= stop_min)
+                    ? (cur_min >= start_min && cur_min < stop_min)
+                    : (cur_min >= start_min || cur_min < stop_min);   /* wraps past midnight */
+            }
+        }
+        g_timer_wallas_start = active;
+
+        vTaskDelay(pdMS_TO_TICKS(20000));
+    }
+}
 
 /* ── Slave Roster (populated dynamically by ESP-NOW recv callback) ─────────── */
 typedef struct {
@@ -407,11 +525,11 @@ static void IRAM_ATTR isr_honda_manual(void *arg)
 }
 static void IRAM_ATTR isr_wallas_start(void *arg)
 {
-    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) || g_web_wallas_start);
+    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) || g_web_wallas_start || g_timer_wallas_start);
 }
 static void IRAM_ATTR isr_wallas_manual(void *arg)
 {
-    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_MANUAL_START) || g_web_wallas_start);
+    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_MANUAL_START) || g_web_wallas_start || g_timer_wallas_start);
 }
 
 static void gpio_init(void)
@@ -521,9 +639,15 @@ void app_main(void)
     /* ESP-NOW (must be after WiFi connected for correct channel) */
     espnow_init();
 
+    /* NTP + weekly Wallas timer (WiFi is mandatory for this unit, so it's
+     * already connected by this point) */
+    ntp_init();
+    timer_nvs_load();
+
     /* Beacon + main control logic tasks */
     xTaskCreate(beacon_task, "beacon", 2048, NULL, 4, NULL);
     xTaskCreate(master_task, "master", 4096, NULL, 5, NULL);
+    xTaskCreate(timer_task,  "timer",  3072, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "Ready");
 }

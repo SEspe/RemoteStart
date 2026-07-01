@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.19  
+**Version:** 1.20  
 **Author:** SEspe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.20 — Added an NTP clock and weekly Wallas timer to MasterRemote (§3.2, §6.1). MasterRemote syncs time via SNTP (`pool.ntp.org`) in the CET/CEST timezone (`Europe/Oslo`, auto-DST). A new **Weekly Timer** tab lets each day of the week be independently enabled/disabled with a start `HH:MM` and stop `HH:MM`, persisted in NVS. The timer is a fourth Wallas command source, OR'd in alongside the Victron relay, physical manual button, and web override — active whenever today is enabled and the current local time falls in `[start, stop)` (a window crossing midnight, e.g. 22:00–02:00, is handled correctly). Never activates before the clock has completed its first sync (guarded by a sanity floor, so an un-synced ~1970 clock can't produce a false match). MasterRemote-only change (v1.5.0) — no slave firmware changes needed.
 - v1.19 — Hardened command authenticity (§3.2/§12): previously, a slave accepted a `master_msg_t` start/stop command from **any** ESP-NOW sender of the right message size — the source MAC was never checked. Slaves now only act on commands from the exact MAC they registered as Master via the beacon, and reject a *new* beacon claimant while their current Master is still active (`MASTER_STALE_US` = 30 s) rather than blindly re-homing trust — closing the "spoof a beacon first, then send commands from that MAC" loophole. Symmetrically, MasterRemote's `register_peer()` now refuses to hand a slave role (SlaveHonda/SlaveWallas) to a new MAC while the current holder is still within the node-stale timeout, so a rogue sender can't hijack a role and feed Master false status. This is MAC-address verification, not cryptographic authentication — it stops stray/accidental ESP-NOW traffic and casual spoofing, not a determined attacker who deliberately clones a MAC. Full protection against that would need ESP-NOW's per-peer encryption (`peer.encrypt`/LMK), which remains available but unused — see §12. All three units updated (MasterRemote 1.4.0, SlaveHonda 1.3.0, SlaveWallas 1.5.0); no wire-format change, so this can be deployed to any subset first without breaking compatibility with not-yet-updated units.
 - v1.18 — SlaveHonda's onboard LED (GPIO2) now matches SlaveWallas's blink pattern: fast (200 ms half-period) when start commanded by Master (`g_start_cmd`), slow (1 s half-period) when idle — previously a fixed 1 Hz blink regardless of state. SlaveHonda-only fix (v1.2.2), no MasterRemote/SlaveWallas changes needed.
 - v1.17 — Fixed the manual **Start/Stop Honda** web buttons (§6.1) silently doing nothing in some cases. `master_task`'s Honda send is edge-triggered — it only transmits when `g_honda_start_cmd != g_slave_honda_running` (Master's last-known feedback from the slave), unlike Wallas which just resends every 15 s unconditionally. If that last-known state already happened to equal the button's target state (e.g. an unconnected/floating running-feedback sensor reading as permanently "running"), the mismatch check was never true and the command never went out. Added `g_honda_force_send`, set by both `/api/honda/start` and `/api/honda/stop`, which forces one send on the next `master_task` tick regardless of the mismatch check or the 30 s restart-block cooldown, then clears itself. MasterRemote-only fix (v1.3.1) — no slave firmware changes needed.
@@ -310,8 +311,8 @@ Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embed
 |--------------------|-------------------------------------------|
 | `esp_wifi`         | WiFi STA / SoftAP, scanning, channel control, ESP-NOW (`esp_now.h`) |
 | `esp_event`        | Default event loop for WiFi/IP events     |
-| `esp_netif`        | Network interface (STA + AP)              |
-| `nvs_flash` / `nvs`| Non-volatile storage of WiFi credentials  |
+| `esp_netif`        | Network interface (STA + AP), SNTP client (`esp_netif_sntp.h`, MasterRemote only) |
+| `nvs_flash` / `nvs`| Non-volatile storage of WiFi credentials, weekly timer config |
 | `esp_driver_gpio`  | GPIO configuration, levels, ISR service   |
 | `esp_http_server`  | Synchronous HTTP server                   |
 | `esp_ota_ops` / `app_update` | OTA write, partition selection, reboot |
@@ -326,19 +327,32 @@ Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embed
 
 All HTML is embedded as `const char[]` string literals in `web_server.c`. No filesystem (SPIFFS/LittleFS) is required.
 
-### 6.1 MasterRemote — Three Tabs
+### 6.1 MasterRemote — Four Tabs
 
 Access at: `http://<MasterRemote-IP>/`
 
-| Tab        | Content                                                      | Refresh  |
-|------------|--------------------------------------------------------------|----------|
-| Pin Status | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
-| Nodes      | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
-| OTA Update | File input + XHR upload to `/ota/upload`                     | Manual   |
+| Tab          | Content                                                      | Refresh  |
+|--------------|--------------------------------------------------------------|----------|
+| Pin Status   | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
+| Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
+| Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
+| OTA Update   | File input + XHR upload to `/ota/upload`                     | Manual   |
 
 The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterRemote's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterRemote's own link.
 
-**Manual control:** the Pin Status tab's Start/Stop buttons are a third command source, OR'd in with the Victron relay and physical manual button (`g_web_honda_start`/`g_web_wallas_start` in `main.c`). Pressing Start latches the override on immediately (no need to wait for a GPIO edge); Stop clears the override and recomputes the command from current physical pin state. A web-triggered start persists across physical switch changes until explicitly stopped via the UI (or the corresponding physical button/relay signal is what next changes state and this recompute runs) — it does not silently clear itself.
+**Manual control:** the Pin Status tab's Start/Stop buttons are a command source OR'd in with the Victron relay and physical manual button (`g_web_honda_start`/`g_web_wallas_start` in `main.c`). Pressing Start latches the override on immediately (no need to wait for a GPIO edge); Stop clears the override and recomputes the command from current physical pin state (and, for Wallas, the weekly timer — see §6.1a). A web-triggered start persists across physical switch changes until explicitly stopped via the UI (or the corresponding physical button/relay signal is what next changes state and this recompute runs) — it does not silently clear itself.
+
+#### 6.1a NTP Clock & Weekly Wallas Timer
+
+MasterRemote syncs time via SNTP (`esp_netif_sntp`, server `pool.ntp.org`) once WiFi is connected, in the `CET-1CEST,M3.5.0,M10.5.0/3` POSIX timezone (Europe/Oslo — CET in winter, CEST in summer, DST transitions handled automatically). The clock is considered "synced" the first time `time(NULL)` returns an epoch past a fixed sanity floor (2024-01-01 UTC) — this exists specifically so an un-synced clock reading ~1970 can never accidentally satisfy a schedule match.
+
+The **Weekly Timer** tab configures one independent on/off window per day of the week (Sunday–Saturday, matching `struct tm.tm_wday` directly) for the Wallas heater: an enable flag, a start `HH:MM`, and a stop `HH:MM`, persisted as a single NVS blob (`walltimer` key, same `NVS_NAMESPACE` as WiFi credentials) so it survives reboot/OTA.
+
+A background task (`timer_task`, 20 s tick) evaluates the current local day and time-of-day against that day's window and sets `g_timer_wallas_start` — this is a **fourth Wallas command source**, OR'd in alongside the Victron relay, physical manual button, and web override (§3.2-style multi-source OR, same pattern as the manual buttons). A window may cross midnight (e.g. start `22:00`, stop `02:00`) and is evaluated correctly either way. If today is disabled, or the clock hasn't synced yet, the timer contributes nothing.
+
+> **Same "sticky OR" behavior as the physical relay:** because this is one more source OR'd into the same command, manually pressing **Stop Wallas** during an active timer window only clears the *web* override — the timer's own contribution is still true, so `timer_task`'s next 20 s tick (or any GPIO edge) will turn it back on. This mirrors how a stuck-active Victron relay signal already behaves today; it is not a new inconsistency introduced by the timer.
+
+The Weekly Timer tab deliberately does **not** auto-refresh every 2 s like the other tabs (unlike Pin Status/Nodes) — its inputs are live, editable form fields, and periodic refresh would overwrite whatever the user is mid-typing. It only re-fetches when the tab is opened and reflects saves immediately (each field save is a separate `POST /api/timer/set` call, fired on `onchange`).
 
 HTTP endpoints:
 
@@ -350,7 +364,9 @@ HTTP endpoints:
 | POST   | `/api/honda/start`  | Manual override: force Honda start cmd |
 | POST   | `/api/honda/stop`   | Clear override; recompute from GPIO    |
 | POST   | `/api/wallas/start` | Manual override: force Wallas start cmd|
-| POST   | `/api/wallas/stop`  | Clear override; recompute from GPIO    |
+| POST   | `/api/wallas/stop`  | Clear override; recompute from GPIO + timer |
+| GET    | `/api/timer`        | JSON: current clock + all 7 days' timer config |
+| POST   | `/api/timer/set`    | Save one day: `?day=0-6&enabled=0\|1&start=HH:MM&stop=HH:MM` |
 | GET    | `/wifi-setup`       | WiFi credential form (portal only)     |
 | GET    | `/api/scan`         | JSON array of nearby networks (portal only) |
 | POST   | `/wifi-save`        | Save credentials to NVS, restart       |
@@ -587,3 +603,5 @@ Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). 
 - SlaveHonda has no web UI/OTA access while running WiFi-less (§6.2) — it must reach WiFi at least once (or be freshly flashed via USB) to receive an OTA update.
 - Old firmware (custom MAC, hardcoded peer table) cannot interoperate with new discovery-based firmware (§8) — all three units must be upgraded together.
 - `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output only, input not enabled) does not reliably read back the pin's actual driven state on ESP-IDF — this affects any status-API field that re-reads an output pin instead of tracking its own commanded state (e.g. SlaveWallas's `relay` field in `/api/status`, MasterRemote's `pFB`). Do not treat these fields as proof of true physical pin state; the GPIO23 heater indicator LED (§2.4) exists specifically to give SlaveWallas's relay a trustworthy hardware-level readout that doesn't depend on this.
+- The weekly Wallas timer (§6.1a) depends on MasterRemote having WiFi/internet reachability for its initial and ongoing NTP sync (`pool.ntp.org`) — since MasterRemote's WiFi is already mandatory (§2.1), this doesn't add a new failure mode, but it's worth noting the timer stays fully inactive (never triggers) until the first successful sync after boot, and there's no local RTC/battery backup to bridge a sync gap after a power cycle. If the router blocks outbound NTP (uncommon but possible on a locked-down network), the timer will never activate at all.
+- A manual **Stop Wallas** press during an active timer window doesn't durably override the timer — it clears the web override, but the timer's own OR'd-in contribution is still true, so it wins back within one `timer_task` tick (≤20 s). See §6.1a.
