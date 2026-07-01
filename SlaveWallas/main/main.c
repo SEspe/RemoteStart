@@ -8,7 +8,7 @@
  *
  * Pin assignments:
  *   GPIO 19  OUTPUT — Wallas heater relay  (HIGH = relay ON = heater running)
- *   GPIO  2  OUTPUT — Onboard LED (fast blink when heater running)
+ *   GPIO  2  OUTPUT — Onboard LED (fast blink when start commanded by Master)
  *   GPIO 18  INPUT  — Wallas running feedback (HIGH = running)
  *   GPIO 23  OUTPUT — Heater indicator LED (mirrors relay, HIGH = heater ON)
  *
@@ -291,8 +291,10 @@ static void status_task(void *arg) {
 
 static void heartbeat_task(void *arg) {
     for (;;) {
-        /* Fast blink when heater running, slow when idle */
-        uint32_t half_ms = g_wallas_running ? 200 : 1000;
+        /* Fast blink when start commanded by Master, slow when idle. Keyed off
+         * g_start_cmd (not g_wallas_running) since the running-feedback sensor
+         * (PIN_WALLAS_FB) may not be wired up. */
+        uint32_t half_ms = g_start_cmd ? 200 : 1000;
         gpio_set_level(PIN_STATUS_LED,
                        (esp_timer_get_time() / (half_ms * 1000)) % 2 == 0 ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(100));

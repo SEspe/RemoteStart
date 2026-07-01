@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.9  
+**Version:** 1.10  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.10 — SlaveWallas: the onboard status LED (GPIO2) blink speed is now keyed off `g_start_cmd` (start commanded by Master) instead of `g_wallas_running` (the running-feedback sensor on GPIO18) — the feedback sensor isn't wired up on this unit yet, so blink speed previously couldn't reflect anything meaningful.
 - v1.9 — SlaveWallas: corrected heater relay pin, GPIO16 → GPIO19 (matches actual wiring, confirmed via the Debug GPIO tab added in v1.8). GPIO2 confirmed as the onboard status/heartbeat LED (blinks by design — slow when idle, fast when the heater is running; no change needed there).
 - v1.8 — SlaveWallas: corrected stale pin labels on the Status tab (relay was still labeled "p0" after the GPIO0→16 move, feedback still labeled "p13" after the GPIO13→18 move — display-only, the underlying GPIO defines were already correct). Added a **Debug GPIO** tab: `GET /api/gpio/set?pin=N&level=0|1` reconfigures any non-reserved GPIO (0,1,2,3,6,7,10,11,14,16-23; strapping pins 4/5/8/9/15 and USB-JTAG 12/13 excluded) to OUTPUT and drives it, for hardware bring-up when physical pin wiring is uncertain. Overrides normal operation of that pin until reboot — hardware debug only, not for production use.
 - v1.7 — Fixed a heap buffer overflow in `h_root()` on all three units: the `%IP%` template placeholder (4 chars) was replaced in-place via `memmove`/`memcpy` inside a buffer sized only for the original template (`strdup()`), so any IP string longer than 4 characters (i.e. almost any real IP) overflowed the allocation, corrupting the heap and crashing the device shortly after — usually visible as the TCP connection to `/` resetting mid-response, while smaller endpoints like `/api/status` kept working fine. Rewritten to build the substituted page into a freshly, exactly-sized buffer instead of mutating a fixed-size one in place. Discovered because SlaveHonda's root page happened to work (no WiFi IP → 1-char `"?"` placeholder, which shrinks rather than overflows) while SlaveWallas's (a real IP) reliably crashed on load.
@@ -81,7 +82,7 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 | GPIO | Direction | Signal                                   |
 |------|-----------|------------------------------------------|
 | 19   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
-|  2   | OUTPUT    | Onboard LED (fast blink when running)    |
+|  2   | OUTPUT    | Onboard LED (fast blink when start commanded by Master; slow = idle) |
 | 18   | INPUT     | Wallas running feedback (HIGH = running) |
 | 23   | OUTPUT    | Heater indicator LED (mirrors relay, HIGH = heater ON) |
 
