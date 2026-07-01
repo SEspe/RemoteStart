@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.2  
+**Version:** 1.4  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.4 — SlaveWallas: fixed heater relay pin (GPIO0 → GPIO16, matches actual wiring); added a GPIO23 indicator LED that mirrors the relay output for hardware-level confirmation. MasterHonda: added WiFi signal strength (RSSI) and channel to the Pin Status tab / `/api/status`
 - v1.3 — Removed custom MAC addressing; units now self-discover peers by function role over ESP-NOW. SlaveHonda gains a WiFi-optional fallback (ESP-NOW channel scan for MasterHonda when it cannot reach the router). MasterHonda's Clients tab becomes a Nodes tab (MAC, IP, connected status, last seen). **Breaking change** — see §3.2 and §12.
 - v1.2 — Migrated firmware and CI to ESP-IDF v6.0.1; SlaveWallas moved to ESP32-C6; added WiFi network scan to the config portal
 - v1.1 — Converted firmware framework from Arduino to ESP-IDF v5
@@ -77,6 +78,9 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 | 16   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
 |  2   | OUTPUT    | Onboard LED (fast blink when running)    |
 | 13   | INPUT     | Wallas running feedback (HIGH = running) |
+| 23   | OUTPUT    | Heater indicator LED (mirrors relay, HIGH = heater ON) |
+
+> **GPIO23 indicator LED:** wired directly alongside the relay output (set together in `wallas_start()`/`wallas_stop()`), giving a physical, hardware-level confirmation of the relay command independent of software status polling — added because `gpio_get_level()` on an output-only-configured pin (e.g. the relay pin itself, §12) cannot reliably report back its own driven state, so the API's `relay` field should not be trusted as proof of physical relay state.
 
 ---
 
@@ -305,7 +309,7 @@ Access at: `http://<MasterHonda-IP>/`
 
 | Tab        | Content                                                      | Refresh  |
 |------------|--------------------------------------------------------------|----------|
-| Pin Status | Live state of 5 pins + 3 global state flags                  | 2 s auto |
+| Pin Status | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) | 2 s auto |
 | Nodes      | Roster of registered slave nodes (§3.2): role, MAC, IP, connected status, last seen, running status | 2 s auto |
 | OTA Update | File input + XHR upload to `/ota/upload`                     | Manual   |
 
@@ -316,7 +320,7 @@ HTTP endpoints:
 | Method | Path           | Description                            |
 |--------|----------------|----------------------------------------|
 | GET    | `/`            | Main dashboard HTML                    |
-| GET    | `/api/status`  | JSON: pin levels and global state      |
+| GET    | `/api/status`  | JSON: pin levels, global state, WiFi RSSI/channel |
 | GET    | `/api/nodes`   | JSON: roster (role, mac, ip, connected, last_seen, running status) |
 | GET    | `/wifi-setup`  | WiFi credential form (portal only)     |
 | GET    | `/api/scan`    | JSON array of nearby networks (portal only) |
@@ -343,10 +347,11 @@ HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/
 {
   "pHS": false,   "pHM": false,   "pWS": false,
   "pWM": false,   "pFB": false,
-  "gHS": false,   "gHR": false,   "gWS": false
+  "gHS": false,   "gHR": false,   "gWS": false,
+  "rssi": -62,    "ch": 1
 }
 ```
-Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running.
+Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running. `rssi` = MasterHonda's WiFi signal strength in dBm (from `esp_wifi_sta_get_ap_info()`); `ch` = its current WiFi/ESP-NOW channel (`wifi_ap_record_t.primary`). Both read 0 if not connected.
 
 ---
 
@@ -533,3 +538,4 @@ Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). 
 - The SoftAP portal's network scan (§4) is capped at 20 results and only lists SSID/RSSI/auth-type — it does not indicate whether a network was previously seen or is the vessel's own router specifically.
 - SlaveHonda has no web UI/OTA access while running WiFi-less (§6.2) — it must reach WiFi at least once (or be freshly flashed via USB) to receive an OTA update.
 - Old firmware (custom MAC, hardcoded peer table) cannot interoperate with new discovery-based firmware (§8) — all three units must be upgraded together.
+- `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output only, input not enabled) does not reliably read back the pin's actual driven state on ESP-IDF — this affects any status-API field that re-reads an output pin instead of tracking its own commanded state (e.g. SlaveWallas's `relay` field in `/api/status`, MasterHonda's `pFB`). Do not treat these fields as proof of true physical pin state; the GPIO23 heater indicator LED (§2.4) exists specifically to give SlaveWallas's relay a trustworthy hardware-level readout that doesn't depend on this.

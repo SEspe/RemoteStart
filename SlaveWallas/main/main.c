@@ -10,6 +10,7 @@
  *   GPIO 16  OUTPUT — Wallas heater relay  (HIGH = relay ON = heater running)
  *   GPIO  2  OUTPUT — Onboard LED (fast blink when heater running)
  *   GPIO 13  INPUT  — Wallas running feedback (HIGH = running)
+ *   GPIO 23  OUTPUT — Heater indicator LED (mirrors relay, HIGH = heater ON)
  *
  * Peer discovery: no custom/hardcoded MAC addresses. This unit uses its own
  * factory MAC, listens for MasterHonda's discovery beacon, and registers
@@ -46,6 +47,7 @@ static const char *TAG = FIRMWARE_NAME;
 #define PIN_WALLAS_RELAY   GPIO_NUM_16   /* HIGH = heater ON           */
 #define PIN_STATUS_LED     GPIO_NUM_2    /* onboard LED                */
 #define PIN_WALLAS_FB      GPIO_NUM_13   /* HIGH = heater running      */
+#define PIN_HEATER_LED     GPIO_NUM_23   /* indicator LED, mirrors relay */
 
 /* ── Timing ──────────────────────────────────────────────────────────────────── */
 #define STATUS_SEND_MS   10000
@@ -182,10 +184,12 @@ static void get_ip_str(char *buf, size_t sz) {
 static void wallas_start(void) {
     ESP_LOGI(TAG, "Wallas START");
     gpio_set_level(PIN_WALLAS_RELAY, 1);
+    gpio_set_level(PIN_HEATER_LED, 1);
 }
 static void wallas_stop(void) {
     ESP_LOGI(TAG, "Wallas STOP");
     gpio_set_level(PIN_WALLAS_RELAY, 0);
+    gpio_set_level(PIN_HEATER_LED, 0);
 }
 
 /* ── ESP-NOW ─────────────────────────────────────────────────────────────────── */
@@ -247,11 +251,12 @@ static void espnow_init(void) {
 /* ── GPIO Init ───────────────────────────────────────────────────────────────── */
 static void gpio_init_pins(void) {
     gpio_config_t out = {
-        .pin_bit_mask = (1ULL<<PIN_WALLAS_RELAY)|(1ULL<<PIN_STATUS_LED),
+        .pin_bit_mask = (1ULL<<PIN_WALLAS_RELAY)|(1ULL<<PIN_STATUS_LED)|(1ULL<<PIN_HEATER_LED),
         .mode = GPIO_MODE_OUTPUT, .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&out);
     gpio_set_level(PIN_WALLAS_RELAY, 0);
     gpio_set_level(PIN_STATUS_LED,   0);
+    gpio_set_level(PIN_HEATER_LED,   0);
 
     gpio_config_t in = {
         .pin_bit_mask = (1ULL<<PIN_WALLAS_FB),

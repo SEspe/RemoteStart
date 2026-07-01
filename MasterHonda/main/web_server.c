@@ -159,6 +159,7 @@ static const char INDEX_HTML_TMPL[] =
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Input Pins</h3><div class='grid' id='pins'>…</div></div>"
 "<div class='card'><h3>System State</h3><div class='grid' id='state'>…</div></div>"
+"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='nodes' class='pane'>"
 "<div id='cli'>…</div><div class='ts' id='cts'></div></div>"
@@ -178,6 +179,7 @@ static const char INDEX_HTML_TMPL[] =
 "document.getElementById(id).classList.add('on');btn.classList.add('on');}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
+"function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
@@ -186,6 +188,8 @@ static const char INDEX_HTML_TMPL[] =
 "row('Honda FB LED (p13)',d.pFB);"
 "document.getElementById('state').innerHTML="
 "row('Honda Start CMD',d.gHS)+row('Honda Slave Running',d.gHR)+row('Wallas CMD',d.gWS);"
+"document.getElementById('wifi').innerHTML="
+"txtRow('Signal strength',d.rssi+' dBm')+txtRow('Channel',d.ch);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "function nodeHdr(n){"
@@ -258,13 +262,16 @@ static esp_err_t h_root(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/status  ── pin + global state JSON */
+/* GET /api/status  ── pin + global state + WiFi link JSON */
 static esp_err_t h_status(httpd_req_t *req)
 {
-    char buf[256];
+    wifi_ap_record_t ap_info = {0};
+    esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not connected */
+
+    char buf[320];
     snprintf(buf, sizeof(buf),
         "{\"pHS\":%s,\"pHM\":%s,\"pWS\":%s,\"pWM\":%s,\"pFB\":%s,"
-        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s}",
+        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"rssi\":%d,\"ch\":%d}",
         !gpio_get_level(PIN_HONDA_START)        ? "true" : "false",
          gpio_get_level(PIN_HONDA_MANUAL_START) ? "true" : "false",
          gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",
@@ -272,7 +279,8 @@ static esp_err_t h_status(httpd_req_t *req)
          gpio_get_level(PIN_HONDA_STARTED_FB)   ? "true" : "false",
         g_honda_start_cmd    ? "true" : "false",
         g_slave_honda_running? "true" : "false",
-        g_wallas_start_cmd   ? "true" : "false");
+        g_wallas_start_cmd   ? "true" : "false",
+        (int)ap_info.rssi, (int)ap_info.primary);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
