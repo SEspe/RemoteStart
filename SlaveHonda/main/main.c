@@ -11,7 +11,7 @@
  *   GPIO 14  OUTPUT — Ignition relay    (LOW = ignition ON)
  *   GPIO 15  INPUT  — Running feedback  (LOW = engine running)
  *   GPIO  4  OUTPUT — External status LED
- *   GPIO  2  OUTPUT — Onboard LED (heartbeat)
+ *   GPIO  2  OUTPUT — Onboard LED (fast blink when start commanded by Master; slow = idle)
  *
  * Peer discovery: no custom/hardcoded MAC addresses. This unit uses its own
  * factory MAC. WiFi is preferred (same as the other units) but the generator
@@ -355,8 +355,11 @@ static void status_task(void *arg) {
 /* ── Heartbeat Task ──────────────────────────────────────────────────────────── */
 static void heartbeat_task(void *arg) {
     for (;;) {
+        /* Fast blink when start commanded by Master, slow when idle — same
+         * pattern as SlaveWallas's onboard LED. */
+        uint32_t half_ms = g_start_cmd ? 200 : 1000;
         gpio_set_level(PIN_LED_ONBOARD,
-                       (esp_timer_get_time() / 500000) % 2 == 0 ? 1 : 0);
+                       (esp_timer_get_time() / (half_ms * 1000)) % 2 == 0 ? 1 : 0);
         vTaskDelay(pdMS_TO_TICKS(100));
     }
 }

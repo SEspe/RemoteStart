@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.17  
+**Version:** 1.18  
 **Author:** SEspe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.18 — SlaveHonda's onboard LED (GPIO2) now matches SlaveWallas's blink pattern: fast (200 ms half-period) when start commanded by Master (`g_start_cmd`), slow (1 s half-period) when idle — previously a fixed 1 Hz blink regardless of state. SlaveHonda-only fix (v1.2.2), no MasterRemote/SlaveWallas changes needed.
 - v1.17 — Fixed the manual **Start/Stop Honda** web buttons (§6.1) silently doing nothing in some cases. `master_task`'s Honda send is edge-triggered — it only transmits when `g_honda_start_cmd != g_slave_honda_running` (Master's last-known feedback from the slave), unlike Wallas which just resends every 15 s unconditionally. If that last-known state already happened to equal the button's target state (e.g. an unconnected/floating running-feedback sensor reading as permanently "running"), the mismatch check was never true and the command never went out. Added `g_honda_force_send`, set by both `/api/honda/start` and `/api/honda/stop`, which forces one send on the next `master_task` tick regardless of the mismatch check or the 30 s restart-block cooldown, then clears itself. MasterRemote-only fix (v1.3.1) — no slave firmware changes needed.
 - v1.16 — CI release notes now list each unit's name and version as its own line (e.g. "**MasterRemote** v1.3.0"), derived automatically from the downloaded artifact filenames in the `release` job — no changes needed to the per-unit build jobs. See §8.
 - v1.15 — Cleaned up the 18 old per-unit GitHub Releases (`master-v*`/`honda-v*`/`wallas-v*`) left over from before the release reorg in v1.13 — each was a single-binary release that cluttered the Releases page and risked someone downloading a stale, possibly protocol-incompatible `.bin` by mistake. Deleted the *releases* (and their uploaded binaries) but kept the underlying *git tags* — no history was lost, `git checkout <tag>` still works for all of them. `v1.5.0` is now the only entry on the Releases page. No firmware or doc content changed.
@@ -72,7 +73,7 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 
 | GPIO | Direction | Signal                                    |
 |------|-----------|-------------------------------------------|
-|  2   | OUTPUT    | Onboard LED — heartbeat blink             |
+|  2   | OUTPUT    | Onboard LED (fast blink when start commanded by Master; slow = idle) |
 |  4   | OUTPUT    | External status LED                       |
 | 13   | OUTPUT    | Starter relay (active LOW = crank ON)     |
 | 14   | OUTPUT    | Ignition relay (active LOW = ignition ON) |
