@@ -154,6 +154,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 volatile bool g_wifi_save_requested = false;
 char          g_new_ssid[64] = {0};
 char          g_new_pass[64] = {0};
+static bool   g_portal_mode  = false;
 
 static void start_config_portal(void)
 {
@@ -170,7 +171,7 @@ static void start_config_portal(void)
             .max_connection = 4,
         }
     };
-    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_AP));
+    ESP_ERROR_CHECK(esp_wifi_set_mode(WIFI_MODE_APSTA));
     ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_AP, &ap_cfg));
     ESP_ERROR_CHECK(esp_wifi_start());
 
@@ -227,6 +228,7 @@ static void wifi_init_and_connect(void)
     }
 
     /* No credentials or connect failed → open config portal */
+    g_portal_mode = true;
     start_config_portal();
     /* Never returns — portal restarts device after save */
 }

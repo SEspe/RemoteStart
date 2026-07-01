@@ -12,6 +12,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
+#include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
@@ -39,20 +40,59 @@ static const char WIFI_SETUP_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
 "<meta name='viewport' content='width=device-width,initial-scale=1'>"
 "<title>WiFi Setup</title>"
-"<style>body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee;display:flex;"
+"<style>"
+"body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee;display:flex;"
 "justify-content:center;align-items:center;min-height:100vh;margin:0}"
-".box{background:#16213e;border-radius:10px;padding:30px;width:300px}"
-"h2{color:#e94560;margin-bottom:20px}label{display:block;margin-bottom:4px;font-size:.85rem}"
-"input{width:100%;padding:8px;margin-bottom:14px;background:#0f3460;border:1px solid #444;"
+".box{background:#16213e;border-radius:10px;padding:24px;width:320px}"
+"h2{color:#e94560;margin-bottom:16px}"
+"label{display:block;margin-bottom:4px;font-size:.85rem}"
+"input{width:100%;padding:8px;margin-bottom:12px;background:#0f3460;border:1px solid #444;"
 "border-radius:5px;color:#eee;box-sizing:border-box}"
-"button{width:100%;padding:10px;background:#e94560;border:none;border-radius:5px;"
-"color:#fff;cursor:pointer;font-size:1rem}</style></head>"
-"<body><div class='box'><h2>&#9889; " FIRMWARE_NAME "<br>WiFi Setup</h2>"
+".btn{width:100%;padding:10px;border:none;border-radius:5px;color:#fff;"
+"cursor:pointer;font-size:.9rem;margin-bottom:8px}"
+".btn-s{background:#0f3460;border:1px solid #e94560}"
+".btn-c{background:#e94560}"
+".sts{font-size:.75rem;color:#888;min-height:1rem;margin-bottom:6px}"
+".nets{max-height:180px;overflow-y:auto;margin-bottom:12px}"
+".net{background:#0f3460;border-radius:5px;padding:8px 12px;margin-bottom:4px;"
+"cursor:pointer;display:flex;justify-content:space-between;align-items:center;"
+"font-size:.85rem}"
+".net:hover{background:#1a4a80}"
+".meta{font-size:.72rem;color:#aaa}"
+".lk{color:#e94560}"
+"</style></head>"
+"<body><div class='box'>"
+"<h2>&#9889; " FIRMWARE_NAME " WiFi</h2>"
+"<button class='btn btn-s' onclick='doScan()'>&#128246; Scan Networks</button>"
+"<div class='sts' id='sts'></div>"
+"<div class='nets' id='nets'></div>"
 "<form action='/wifi-save' method='POST'>"
-"<label>Network (SSID)</label><input name='ssid' type='text' required>"
-"<label>Password</label><input name='pass' type='password'>"
-"<button type='submit'>Connect &amp; Save</button>"
-"</form></div></body></html>";
+"<label>SSID</label>"
+"<input id='sid' name='ssid' type='text' placeholder='tap network or type' required>"
+"<label>Password</label>"
+"<input name='pass' type='password' placeholder='leave blank if open'>"
+"<button class='btn btn-c' type='submit'>Connect &amp; Save</button>"
+"</form>"
+"<script>"
+"function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
+"function doScan(){"
+"var st=document.getElementById('sts');"
+"st.textContent='Scanning\\u2026';"
+"document.getElementById('nets').innerHTML='';"
+"fetch('/api/scan').then(function(r){return r.json();})"
+".then(function(a){"
+"st.textContent=a.length+' network'+(a.length!==1?'s':'')+' found';"
+"var c=document.getElementById('nets');"
+"a.forEach(function(n){"
+"var d=document.createElement('div');d.className='net';"
+"d.innerHTML='<span>'+esc(n.ssid)+'</span>"
+"<span class=meta>'+n.rssi+'dBm "
+"'+(n.auth?'<span class=lk>&#128274;</span>':'open')+'</span>';"
+"d.onclick=function(){document.getElementById('sid').value=n.ssid;};"
+"c.appendChild(d);});}).catch(function(){"
+"st.textContent='Scan failed \\u2014 try again';});}"
+"</script>"
+"</div></body></html>";
 
 static const char INDEX_HTML[] =
 "<!DOCTYPE html><html lang='en'><head>"
@@ -222,6 +262,57 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/scan  ── WiFi scan, returns JSON array */
+static esp_err_t h_scan(httpd_req_t *req)
+{
+    wifi_scan_config_t scfg = {
+        .scan_type = WIFI_SCAN_TYPE_ACTIVE,
+        .scan_time.active.min = 120,
+        .scan_time.active.max = 300,
+    };
+    esp_wifi_scan_start(&scfg, true);
+
+    uint16_t count = 0;
+    esp_wifi_scan_get_ap_num(&count);
+    if (count > 20) count = 20;
+
+    wifi_ap_record_t *recs = count ? malloc(count * sizeof(wifi_ap_record_t)) : NULL;
+    if (recs) esp_wifi_scan_get_ap_records(&count, recs);
+    else count = 0;
+
+    char *buf = malloc((int)count * 140 + 8);
+    if (!buf) {
+        free(recs);
+        httpd_resp_set_type(req, "application/json");
+        httpd_resp_sendstr(req, "[]");
+        return ESP_OK;
+    }
+
+    strcpy(buf, "[");
+    bool first = true;
+    for (int i = 0; i < (int)count; i++) {
+        if (recs[i].ssid[0] == '\0') continue;
+        char esc[70] = {0};
+        int j = 0;
+        for (int k = 0; recs[i].ssid[k] && k < 32 && j < 66; k++) {
+            unsigned char c = recs[i].ssid[k];
+            if (c == '"' || c == '\\') esc[j++] = '\\';
+            if (c >= 0x20) esc[j++] = c;
+        }
+        char entry[140];
+        snprintf(entry, sizeof(entry), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
+                 first ? "" : ",", esc, recs[i].rssi, (int)recs[i].authmode);
+        strcat(buf, entry);
+        first = false;
+    }
+    strcat(buf, "]");
+    free(recs);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    free(buf);
+    return ESP_OK;
+}
+
 /* ── Start ───────────────────────────────────────────────────────────────────── */
 esp_err_t web_server_start(void)
 {
@@ -235,6 +326,7 @@ esp_err_t web_server_start(void)
         { .uri="/api/status", .method=HTTP_GET,  .handler=h_status     },
         { .uri="/wifi-setup", .method=HTTP_GET,  .handler=h_wifi_setup },
         { .uri="/wifi-save",  .method=HTTP_POST, .handler=h_wifi_save  },
+        { .uri="/api/scan",   .method=HTTP_GET,  .handler=h_scan       },
         { .uri="/ota/upload", .method=HTTP_POST, .handler=h_ota_upload },
     };
     for (size_t i=0; i<sizeof(routes)/sizeof(routes[0]); i++)

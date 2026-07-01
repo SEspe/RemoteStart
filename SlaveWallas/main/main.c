@@ -95,10 +95,11 @@ static void nvs_save_wifi(const char *ssid, const char *pass) {
 volatile bool g_wifi_save_requested = false;
 char          g_new_ssid[64] = {0};
 char          g_new_pass[64] = {0};
+static bool   g_portal_mode  = false;
 
 static void wifi_event_handler(void *a, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT) {
-        if (id == WIFI_EVENT_STA_START) esp_wifi_connect();
+        if (id == WIFI_EVENT_STA_START && !g_portal_mode) esp_wifi_connect();
         else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             if (s_retry++ < MAX_RETRY) esp_wifi_connect();
             else xEventGroupSetBits(s_wifi_eg, WIFI_FAIL_BIT);
@@ -118,7 +119,7 @@ static void start_config_portal(void) {
         .authmode=WIFI_AUTH_WPA2_PSK, .max_connection=4 }};
     memcpy(ap_cfg.ap.ssid,     WIFI_AP_SSID,    strlen(WIFI_AP_SSID));
     memcpy(ap_cfg.ap.password, WIFI_AP_PASSWORD, strlen(WIFI_AP_PASSWORD));
-    esp_wifi_set_mode(WIFI_MODE_AP);
+    esp_wifi_set_mode(WIFI_MODE_APSTA);
     esp_wifi_set_config(WIFI_IF_AP, &ap_cfg);
     esp_wifi_start();
     web_server_start();
@@ -153,6 +154,7 @@ static void wifi_init_and_connect(void) {
         ESP_LOGW(TAG, "Connect failed, opening portal");
         esp_wifi_stop();
     }
+    g_portal_mode = true;
     start_config_portal();
 }
 
