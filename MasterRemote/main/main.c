@@ -227,6 +227,15 @@ static void timer_task(void *arg)
         }
         g_timer_wallas_start = active;
 
+        /* Setting the flag alone isn't enough -- g_wallas_start_cmd is only
+         * recomputed on a GPIO edge or a web button click, neither of which
+         * a plain clock tick is. Recompute it here too, or a schedule
+         * boundary would silently never take effect (same class of bug as
+         * the Honda force-send fix, §12). */
+        g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
+                               !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
+                               g_web_wallas_start || g_timer_wallas_start);
+
         vTaskDelay(pdMS_TO_TICKS(20000));
     }
 }
