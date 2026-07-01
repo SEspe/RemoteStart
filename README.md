@@ -6,7 +6,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 
 | Unit         | MCU      | Purpose                                   | Web UI tabs |
 |--------------|----------|--------------------------------------------|-------------|
-| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Nodes, OTA Update |
+| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Nodes, Weekly Timer, OTA Update |
 | SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, OTA Update |
 | SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug GPIO, OTA Update |
 
@@ -21,6 +21,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **SlaveHonda WiFi-optional fallback** — if it can't reach the router, it scans ESP-NOW channels for MasterRemote directly and keeps operating without an IP
 - **Native captive portal** — first-startup WiFi setup with network scan, served by `esp_http_server` directly
 - **Web UI per unit** — live pin status, node roster with per-link RSSI/channel (MasterRemote), manual start/stop override, OTA update
+- **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a fourth Wallas start source alongside the relay, manual button, and web override (see FSD §6.1a)
 - **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash
 - **Individual versioning** — each unit has its own `FIRMWARE_VERSION` in `main/version.h`
 
