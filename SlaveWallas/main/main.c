@@ -1,6 +1,6 @@
 /*
  * SlaveWallas — ESP32-C6 Wallas Heater Slave
- * Author: Stein Espe
+ * Author: SEspe
  * Framework: ESP-IDF v6.x
  *
  * Build:  idf.py build

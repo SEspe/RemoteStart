@@ -1,7 +1,7 @@
 /*
  * SlaveWallas.ino
  * ESP32 Slave — Wallas Heater Remote Start
- * Author: Stein Espe
+ * Author: SEspe
  * Version: 1.0.0
  *
  * Converted from ESP8266 (SlaveWallas8266.ino) to ESP32.

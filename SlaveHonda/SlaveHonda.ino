@@ -1,7 +1,7 @@
 /*
  * SlaveHonda.ino
  * ESP32 Slave — Honda EU70IS Generator Remote Start
- * Author: Stein Espe
+ * Author: SEspe
  * Version: 1.0.0
  *
  * Required libraries (Arduino Library Manager):

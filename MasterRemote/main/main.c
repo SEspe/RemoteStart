@@ -1,6 +1,6 @@
 /*
  * MasterRemote — ESP32 Master Remote Start Controller
- * Author: Stein Espe
+ * Author: SEspe
  * Framework: ESP-IDF v6.x
  *
  * Build:  idf.py build

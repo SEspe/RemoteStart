@@ -1,7 +1,7 @@
 /*
  * MasterHonda.ino
  * ESP32 Master — Honda EU70IS & Wallas Heater Remote Start
- * Author: Stein Espe
+ * Author: SEspe
  * Version: 1.0.0
  *
  * Required libraries (Arduino Library Manager):

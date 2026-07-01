@@ -1,6 +1,6 @@
 /*
  * SlaveHonda — ESP32 Honda EU70IS Generator Slave
- * Author: Stein Espe
+ * Author: SEspe
  * Framework: ESP-IDF v6.x
  *
  * Build:  idf.py build

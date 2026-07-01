@@ -1,7 +1,7 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
 **Version:** 1.17  
-**Author:** Stein Espe  
+**Author:** SEspe  
 **Date:** 2026-07-01  
 **Changelog:**
 - v1.17 — Fixed the manual **Start/Stop Honda** web buttons (§6.1) silently doing nothing in some cases. `master_task`'s Honda send is edge-triggered — it only transmits when `g_honda_start_cmd != g_slave_honda_running` (Master's last-known feedback from the slave), unlike Wallas which just resends every 15 s unconditionally. If that last-known state already happened to equal the button's target state (e.g. an unconnected/floating running-feedback sensor reading as permanently "running"), the mismatch check was never true and the command never went out. Added `g_honda_force_send`, set by both `/api/honda/start` and `/api/honda/stop`, which forces one send on the next `master_task` tick regardless of the mismatch check or the 30 s restart-block cooldown, then clears itself. MasterRemote-only fix (v1.3.1) — no slave firmware changes needed.
