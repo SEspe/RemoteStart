@@ -16,7 +16,7 @@
  * must not be used as regular GPIO — see FSD_RemoteStart.md §2.4.
  *
  * Peer discovery: no custom/hardcoded MAC addresses. This unit uses its own
- * factory MAC, listens for MasterHonda's discovery beacon, and registers
+ * factory MAC, listens for MasterRemote's discovery beacon, and registers
  * itself via its normal heartbeat — see FSD_RemoteStart.md §3.2. WiFi is
  * mandatory for this unit (Wallas is expected to always be within range).
  */
@@ -64,7 +64,7 @@ typedef struct {
 } master_msg_t;
 
 typedef struct {
-    char  label[32];   /* "MasterHonda" */
+    char  label[32];   /* "MasterRemote" */
 } master_beacon_t;      /* broadcast-only, discovery */
 
 typedef struct {
@@ -73,7 +73,7 @@ typedef struct {
     bool  WallasStart;
     char  ip[16];
     bool  has_wifi;
-    int8_t  rssi;      /* RSSI of last frame heard from MasterHonda, dBm */
+    int8_t  rssi;      /* RSSI of last frame heard from MasterRemote, dBm */
     uint8_t channel;   /* channel that frame was received on */
     char    fw_version[12];
 } slave_wallas_msg_t;
@@ -85,7 +85,7 @@ volatile bool g_start_cmd     = false;
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
 static bool    s_master_known   = false;
-static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterHonda */
+static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterRemote */
 static uint8_t s_link_channel   = 0;
 
 /* ── WiFi ────────────────────────────────────────────────────────────────────── */
@@ -238,7 +238,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
     if (len == (int)sizeof(master_beacon_t)) {
         master_beacon_t beacon;
         memcpy(&beacon, data, sizeof(beacon));
-        if (strncmp(beacon.label, "MasterHonda", 11) == 0 &&
+        if (strncmp(beacon.label, "MasterRemote", 12) == 0 &&
             (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0)) {
             memcpy(s_master_mac, info->src_addr, 6);
             espnow_add_peer(s_master_mac);
@@ -261,7 +261,7 @@ static void espnow_init(void) {
     esp_now_init();
     esp_now_register_send_cb(espnow_send_cb);
     esp_now_register_recv_cb(espnow_recv_cb);
-    ESP_LOGI(TAG, "ESP-NOW ready, listening for MasterHonda beacon");
+    ESP_LOGI(TAG, "ESP-NOW ready, listening for MasterRemote beacon");
 }
 
 /* ── GPIO Init ───────────────────────────────────────────────────────────────── */

@@ -1,19 +1,21 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.12  
+**Version:** 1.14  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.14 — Renamed the master unit from **MasterHonda** to **MasterRemote** throughout: project directory (`MasterHonda/` → `MasterRemote/`, git history preserved via `git mv`), `FIRMWARE_NAME`, config-portal AP SSID (`MasterRemote-Config`), CMake project name, HTML page title/header, and every mention in this document, the README, and CI workflow. `NVS_NAMESPACE` was deliberately left as `"mhonda"` so the already-deployed unit keeps its stored WiFi credentials across the update. **Breaking change**: the discovery beacon's identity string changed length (`"MasterHonda"` = 11 chars → `"MasterRemote"` = 12 chars) and both slaves' `strncmp()` match against it — all three units must be reflashed together, or SlaveHonda/SlaveWallas will stop recognizing the beacon and lose discovery. Historical changelog entries below still say "MasterHonda" for the versions where that was the current name.
+- v1.13 — Reorganized releases: introduced a release-level version, independent of each unit's own `FIRMWARE_VERSION` (which keep incrementing independently per unit, unchanged by this reorg). All three units are now released together under one combined git tag/GitHub Release at the release version (e.g. `v1.5.0`) instead of separate `master-v*`/`honda-v*`/`wallas-v*` tags — the CI workflow already supported this (a `v*` tag builds all three and attaches all three `.bin` files, each still named with its own unit's version, to one GitHub Release); the per-unit tag patterns just hadn't been in active use this session. Per-unit tags remain available in CI for a genuine single-unit hotfix, but `v*` is now the standard release path. See §8.
 - v1.12 — SlaveHonda gains a Debug GPIO tab, mirroring SlaveWallas's (same `GET /api/gpio/set`/`GET /api/gpio/status` design), adapted for the ESP32-classic pin map: manipulable subset is GPIO 4,13,14,16-19,21-23,25-27,32,33; reserved-and-status-only covers strapping (0,2,5,12,15), embedded flash (6-11), UART0 console (1,3), and input-only pins (34-39). Status dots cover the full GPIO 0-39 range. SlaveWallas's regular Status tab gains a lamp-style row for the GPIO23 heater indicator LED (was previously only visible via the Debug tab, not the normal status view).
 - v1.11 — SlaveWallas Debug GPIO tab now shows a live status dot (green = HIGH) for every GPIO 0-30, not just the manipulable subset, via a new read-only `GET /api/gpio/status`. Reserved pins (strapping, USB-JTAG) show status only, no ON/OFF buttons, since `gpio_get_level()` alone is passive (just reads the input register) and safe to call on any pin, unlike `h_gpio_set`'s active reconfiguration.
 - v1.10 — SlaveWallas: the onboard status LED (GPIO2) blink speed is now keyed off `g_start_cmd` (start commanded by Master) instead of `g_wallas_running` (the running-feedback sensor on GPIO18) — the feedback sensor isn't wired up on this unit yet, so blink speed previously couldn't reflect anything meaningful.
 - v1.9 — SlaveWallas: corrected heater relay pin, GPIO16 → GPIO19 (matches actual wiring, confirmed via the Debug GPIO tab added in v1.8). GPIO2 confirmed as the onboard status/heartbeat LED (blinks by design — slow when idle, fast when the heater is running; no change needed there).
 - v1.8 — SlaveWallas: corrected stale pin labels on the Status tab (relay was still labeled "p0" after the GPIO0→16 move, feedback still labeled "p13" after the GPIO13→18 move — display-only, the underlying GPIO defines were already correct). Added a **Debug GPIO** tab: `GET /api/gpio/set?pin=N&level=0|1` reconfigures any non-reserved GPIO (0,1,2,3,6,7,10,11,14,16-23; strapping pins 4/5/8/9/15 and USB-JTAG 12/13 excluded) to OUTPUT and drives it, for hardware bring-up when physical pin wiring is uncertain. Overrides normal operation of that pin until reboot — hardware debug only, not for production use.
 - v1.7 — Fixed a heap buffer overflow in `h_root()` on all three units: the `%IP%` template placeholder (4 chars) was replaced in-place via `memmove`/`memcpy` inside a buffer sized only for the original template (`strdup()`), so any IP string longer than 4 characters (i.e. almost any real IP) overflowed the allocation, corrupting the heap and crashing the device shortly after — usually visible as the TCP connection to `/` resetting mid-response, while smaller endpoints like `/api/status` kept working fine. Rewritten to build the substituted page into a freshly, exactly-sized buffer instead of mutating a fixed-size one in place. Discovered because SlaveHonda's root page happened to work (no WiFi IP → 1-char `"?"` placeholder, which shrinks rather than overflows) while SlaveWallas's (a real IP) reliably crashed on load.
-- v1.6 — Slave heartbeats (`slave_msg_t`/`slave_wallas_msg_t`) now carry per-link RSSI, channel, and firmware version, sourced from the receiving radio's `rx_ctrl` on the last frame heard from MasterHonda (works whether or not the slave has its own WiFi/AP association). MasterHonda's Nodes tab is redesigned as a table (one row per node, RSSI/Channel/FW columns) instead of stacked cards, and the Pin Status tab gains manual **Start/Stop Honda** and **Start/Stop Wallas** buttons — a third command source OR'd in alongside the Victron relay and physical manual buttons via new `/api/honda/start\|stop` and `/api/wallas/start\|stop` endpoints. **Breaking change** (message struct sizes changed) — all three units must be upgraded together, same as §3.2.
+- v1.6 — Slave heartbeats (`slave_msg_t`/`slave_wallas_msg_t`) now carry per-link RSSI, channel, and firmware version, sourced from the receiving radio's `rx_ctrl` on the last frame heard from MasterRemote (works whether or not the slave has its own WiFi/AP association). MasterRemote's Nodes tab is redesigned as a table (one row per node, RSSI/Channel/FW columns) instead of stacked cards, and the Pin Status tab gains manual **Start/Stop Honda** and **Start/Stop Wallas** buttons — a third command source OR'd in alongside the Victron relay and physical manual buttons via new `/api/honda/start\|stop` and `/api/wallas/start\|stop` endpoints. **Breaking change** (message struct sizes changed) — all three units must be upgraded together, same as §3.2.
 - v1.5 — Fixed an OTA upload bug on all three units: `h_ota_upload()` retried `httpd_req_recv()` forever on a timeout instead of giving up, so a client aborting mid-upload could permanently wedge the httpd worker (and, since there's only one, the entire web server) until a USB reflash. Now bounded to 5 consecutive timeouts before aborting cleanly. SlaveWallas: moved `PIN_WALLAS_FB` off GPIO13 (reserved for native USB-Serial/JTAG D+, §2.4) to GPIO18.
-- v1.4 — SlaveWallas: fixed heater relay pin (GPIO0 → GPIO16, matches actual wiring); added a GPIO23 indicator LED that mirrors the relay output for hardware-level confirmation. MasterHonda: added WiFi signal strength (RSSI) and channel to the Pin Status tab / `/api/status`
-- v1.3 — Removed custom MAC addressing; units now self-discover peers by function role over ESP-NOW. SlaveHonda gains a WiFi-optional fallback (ESP-NOW channel scan for MasterHonda when it cannot reach the router). MasterHonda's Clients tab becomes a Nodes tab (MAC, IP, connected status, last seen). **Breaking change** — see §3.2 and §12.
+- v1.4 — SlaveWallas: fixed heater relay pin (GPIO0 → GPIO16, matches actual wiring); added a GPIO23 indicator LED that mirrors the relay output for hardware-level confirmation. MasterRemote: added WiFi signal strength (RSSI) and channel to the Pin Status tab / `/api/status`
+- v1.3 — Removed custom MAC addressing; units now self-discover peers by function role over ESP-NOW. SlaveHonda gains a WiFi-optional fallback (ESP-NOW channel scan for MasterRemote when it cannot reach the router). MasterRemote's Clients tab becomes a Nodes tab (MAC, IP, connected status, last seen). **Breaking change** — see §3.2 and §12.
 - v1.2 — Migrated firmware and CI to ESP-IDF v6.0.1; SlaveWallas moved to ESP32-C6; added WiFi network scan to the config portal
 - v1.1 — Converted firmware framework from Arduino to ESP-IDF v5
 
@@ -25,10 +27,10 @@ The Remote Start System provides wireless remote start/stop control for a Honda 
 
 Three ESP32 microcontrollers communicate over the **ESP-NOW** peer-to-peer protocol. Each unit uses its own factory (burned-in) MAC address — there is no custom/hardcoded MAC assignment. Units find each other dynamically by function role (§3.2) rather than by a pre-shared peer table, so any unit's module can be swapped without reconfiguring the others.
 
-MasterHonda and SlaveWallas connect to a local WiFi network for web-based monitoring, OTA, and to derive their ESP-NOW channel. SlaveHonda prefers WiFi too, but if it cannot reach the router (e.g. weak signal near the generator) it instead scans ESP-NOW channels to find MasterHonda directly and operates without a WiFi/IP connection.
+MasterRemote and SlaveWallas connect to a local WiFi network for web-based monitoring, OTA, and to derive their ESP-NOW channel. SlaveHonda prefers WiFi too, but if it cannot reach the router (e.g. weak signal near the generator) it instead scans ESP-NOW channels to find MasterRemote directly and operates without a WiFi/IP connection.
 
 ```
- Victron Venus  ──relay──►  MasterHonda  ──ESP-NOW──►  SlaveHonda  (Honda EU70IS)
+ Victron Venus  ──relay──►  MasterRemote  ──ESP-NOW──►  SlaveHonda  (Honda EU70IS)
  Manual switches ──────────►      │       ──ESP-NOW──►  SlaveWallas (Wallas heater)
                                   │
                             Web UI / OTA
@@ -44,7 +46,7 @@ MasterHonda and SlaveWallas connect to a local WiFi network for web-based monito
 
 | Unit         | MCU      | Function role                              | WiFi requirement |
 |--------------|----------|---------------------------------------------|-------------------|
-| MasterHonda  | ESP32    | Master — relay/button input, ESP-NOW hub    | Required          |
+| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub    | Required          |
 | SlaveHonda   | ESP32    | Function slave — Honda generator control    | Preferred; falls back to ESP-NOW channel scan (§3.2) if unreachable |
 | SlaveWallas  | ESP32-C6 | Function slave — Wallas heater control      | Required          |
 
@@ -52,7 +54,7 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 
 > **SlaveWallas chip note:** ESP32-C6 (not ESP32). Requires `idf.py set-target esp32c6` before the first build/flash of that project, and uses the onboard USB-Serial/JTAG console (`CONFIG_ESP_CONSOLE_USB_SERIAL_JTAG=y`) rather than a separate UART bridge chip.
 
-### 2.2 MasterHonda Pin Assignments
+### 2.2 MasterRemote Pin Assignments
 
 | GPIO | Direction    | Signal                             |
 |------|--------------|------------------------------------|
@@ -120,17 +122,17 @@ No unit's peer MAC is known in advance (§2.1), so peers are learned dynamically
 
 | Unit        | How it gets an ESP-NOW channel                                                                 |
 |-------------|--------------------------------------------------------------------------------------------------|
-| MasterHonda | Connects to WiFi (required); its ESP-NOW channel is whatever channel it associates on.           |
+| MasterRemote | Connects to WiFi (required); its ESP-NOW channel is whatever channel it associates on.           |
 | SlaveWallas | Connects to WiFi (required, same SSID as Master); channel matches automatically since both are on the same AP/router. |
-| SlaveHonda  | Attempts WiFi connect first, using the same stored credentials and 15 s timeout as the other units (§4). **If it succeeds**, it behaves exactly like SlaveWallas — channel comes from the AP. **If it fails** (credentials exist but the router is unreachable), it does **not** reopen the config portal. Instead it enters **ESP-NOW channel scan**: it sets the radio to each 2.4 GHz channel 1–13 in turn (`esp_wifi_set_channel()`), dwelling on each one long enough to catch a MasterHonda beacon, until it hears one. It then locks to that channel. The config portal is still used on a genuinely unconfigured unit (no stored credentials at all) — see §4. |
+| SlaveHonda  | Attempts WiFi connect first, using the same stored credentials and 15 s timeout as the other units (§4). **If it succeeds**, it behaves exactly like SlaveWallas — channel comes from the AP. **If it fails** (credentials exist but the router is unreachable), it does **not** reopen the config portal. Instead it enters **ESP-NOW channel scan**: it sets the radio to each 2.4 GHz channel 1–13 in turn (`esp_wifi_set_channel()`), dwelling on each one long enough to catch a MasterRemote beacon, until it hears one. It then locks to that channel. The config portal is still used on a genuinely unconfigured unit (no stored credentials at all) — see §4. |
 
 #### Discovery beacon (new message)
 
-While connected to WiFi, MasterHonda periodically broadcasts a small identity beacon to `FF:FF:FF:FF:FF:FF` (the broadcast address is added as a fixed ESP-NOW peer at init, same as today's peer setup, just unconditional rather than per-slave):
+While connected to WiFi, MasterRemote periodically broadcasts a small identity beacon to `FF:FF:FF:FF:FF:FF` (the broadcast address is added as a fixed ESP-NOW peer at init, same as today's peer setup, just unconditional rather than per-slave):
 
 ```c
 typedef struct {
-    char label[32];   // "MasterHonda"
+    char label[32];   // "MasterRemote"
 } master_beacon_t;
 ```
 
@@ -142,10 +144,10 @@ No separate "register" message is needed. The existing periodic heartbeats alrea
 
 1. A slave hears Master's beacon, learns Master's MAC, and calls `esp_now_add_peer()` for it.
 2. The slave then sends its normal heartbeat unicast to that MAC. Message *type/size* alone (already how the current receive handler tells the two slave message structs apart) is enough for Master to identify the role — no MAC allowlist or label parsing required.
-3. MasterHonda, on receiving a heartbeat from a MAC it doesn't yet have as a peer, calls `esp_now_add_peer()` for it and adds/updates an in-RAM roster entry: `{mac, role, ip, has_wifi, last_seen}`. This roster (not a static peer table) is what MasterHonda's periodic command sends (§3.3) address, and what backs the Nodes web tab (§6.1).
-4. Every subsequent heartbeat refreshes `last_seen` for that MAC. If MasterHonda reboots (roster cleared), the next heartbeat a slave sends after hearing a fresh beacon re-registers it automatically — no manual pairing step ever required.
+3. MasterRemote, on receiving a heartbeat from a MAC it doesn't yet have as a peer, calls `esp_now_add_peer()` for it and adds/updates an in-RAM roster entry: `{mac, role, ip, has_wifi, last_seen}`. This roster (not a static peer table) is what MasterRemote's periodic command sends (§3.3) address, and what backs the Nodes web tab (§6.1).
+4. Every subsequent heartbeat refreshes `last_seen` for that MAC. If MasterRemote reboots (roster cleared), the next heartbeat a slave sends after hearing a fresh beacon re-registers it automatically — no manual pairing step ever required.
 
-If MasterHonda currently has no registered peer for a given role (e.g. SlaveHonda is still channel-scanning), its periodic command send for that role is simply skipped until a peer appears.
+If MasterRemote currently has no registered peer for a given role (e.g. SlaveHonda is still channel-scanning), its periodic command send for that role is simply skipped until a peer appears.
 
 ### 3.3 Message Structures
 
@@ -185,16 +187,16 @@ typedef struct {
 ```c
     char    ip[16];        // "" if unit currently has no WiFi/IP (e.g. SlaveHonda in channel-scan mode)
     bool    has_wifi;      // true if this heartbeat was sent while WiFi-connected
-    int8_t  rssi;          // signal strength of the last frame heard from MasterHonda, dBm
+    int8_t  rssi;          // signal strength of the last frame heard from MasterRemote, dBm
     uint8_t channel;       // channel that frame was received on
     char    fw_version[12];// this slave's own FIRMWARE_VERSION string
 ```
 `rssi`/`channel` are read from `esp_now_recv_info_t.rx_ctrl` on whatever the slave most recently received from Master (beacon or command) — this works identically whether or not the slave has its own WiFi/AP association, so it reports real per-link quality even for a SlaveHonda running in ESP-NOW-only fallback (§3.2).
 
-#### MasterHonda → broadcast (`master_beacon_t`, new — discovery only)
+#### MasterRemote → broadcast (`master_beacon_t`, new — discovery only)
 ```c
 typedef struct {
-    char  label[32];   // "MasterHonda"
+    char  label[32];   // "MasterRemote"
 } master_beacon_t;
 ```
 
@@ -219,7 +221,7 @@ typedef struct {
 
 On first power-up — or any boot where NVS has no stored WiFi credentials at all — each unit opens a SoftAP captive portal implemented directly in `main.c` using `esp_wifi` and `esp_http_server`. No external WiFiManager library is used.
 
-> This portal is for *initial setup only*. A runtime connect failure with credentials already stored behaves differently per unit: MasterHonda and SlaveWallas retry/reopen the portal as before (WiFi is mandatory for both). SlaveHonda instead falls back to the ESP-NOW channel scan described in §3.2 and does **not** reopen the portal — the generator location is expected to sometimes be out of WiFi range, and reopening a config AP there would just strand the unit.
+> This portal is for *initial setup only*. A runtime connect failure with credentials already stored behaves differently per unit: MasterRemote and SlaveWallas retry/reopen the portal as before (WiFi is mandatory for both). SlaveHonda instead falls back to the ESP-NOW channel scan described in §3.2 and does **not** reopen the portal — the generator location is expected to sometimes be out of WiFi range, and reopening a config AP there would just strand the unit.
 
 ### Procedure for each unit
 
@@ -228,7 +230,7 @@ On first power-up — or any boot where NVS has no stored WiFi credentials at al
 
    | Unit         | AP Name              | Password    |
    |--------------|----------------------|-------------|
-   | MasterHonda  | `MasterHonda-Config` | `honda1234` |
+   | MasterRemote  | `MasterRemote-Config` | `honda1234` |
    | SlaveHonda   | `SlaveHonda-Config`  | `honda1234` |
    | SlaveWallas  | `SlaveWallas-Config` | `honda1234` |
 
@@ -317,9 +319,9 @@ Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embed
 
 All HTML is embedded as `const char[]` string literals in `web_server.c`. No filesystem (SPIFFS/LittleFS) is required.
 
-### 6.1 MasterHonda — Three Tabs
+### 6.1 MasterRemote — Three Tabs
 
-Access at: `http://<MasterHonda-IP>/`
+Access at: `http://<MasterRemote-IP>/`
 
 | Tab        | Content                                                      | Refresh  |
 |------------|--------------------------------------------------------------|----------|
@@ -327,7 +329,7 @@ Access at: `http://<MasterHonda-IP>/`
 | Nodes      | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | OTA Update | File input + XHR upload to `/ota/upload`                     | Manual   |
 
-The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterHonda's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterHonda's own link.
+The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterRemote's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterRemote's own link.
 
 **Manual control:** the Pin Status tab's Start/Stop buttons are a third command source, OR'd in with the Victron relay and physical manual button (`g_web_honda_start`/`g_web_wallas_start` in `main.c`). Pressing Start latches the override on immediately (no need to wait for a GPIO edge); Stop clears the override and recomputes the command from current physical pin state. A web-triggered start persists across physical switch changes until explicitly stopped via the UI (or the corresponding physical button/relay signal is what next changes state and this recompute runs) — it does not silently clear itself.
 
@@ -366,13 +368,13 @@ HTTP endpoints on both units: `/`, `/api/status`, `/api/gpio/set?pin=N&level=0|1
 | SlaveHonda  | ESP32        | 4,13,14,16,17,18,19,21,22,23,25,26,27,32,33  | Strapping (0,2,5,12,15), embedded flash (6-11), UART0 console (1,3), input-only (34-39) |
 | SlaveWallas | ESP32-C6     | 0,1,2,3,6,7,10,11,14,16-23                  | Strapping (4,5,8,9,15), USB-Serial/JTAG (12,13)              |
 
-> **SlaveHonda in ESP-NOW fallback (§3.2):** the unit has no IP address while WiFi-less, so its own web UI (and OTA) is unreachable in that state. Its status is only visible remotely via MasterHonda's Nodes tab (§6.1). To OTA-update SlaveHonda, it must be within WiFi range at boot (or reachable via the config portal) at least once.
+> **SlaveHonda in ESP-NOW fallback (§3.2):** the unit has no IP address while WiFi-less, so its own web UI (and OTA) is unreachable in that state. Its status is only visible remotely via MasterRemote's Nodes tab (§6.1). To OTA-update SlaveHonda, it must be within WiFi range at boot (or reachable via the config portal) at least once.
 
 > **Debug GPIO (SlaveWallas only, §11):** `/api/gpio/set` unconditionally calls `gpio_reset_pin()` + `gpio_set_direction(OUTPUT)` + `gpio_set_level()` on whatever pin number is given, for physically verifying wiring when pin assignments are uncertain. It has no awareness of what a pin is normally used for — toggling GPIO19 (relay), GPIO18 (feedback input), GPIO2, or GPIO23 (LEDs) here overrides the unit's normal control of that pin until the next reboot. Not gated behind any confirmation; intended for hardware bring-up sessions only, not left exposed in a production deployment.
 
 ### 6.3 Status JSON format
 
-`GET /api/status` on MasterHonda returns:
+`GET /api/status` on MasterRemote returns:
 ```json
 {
   "pHS": false,   "pHM": false,   "pWS": false,
@@ -381,7 +383,7 @@ HTTP endpoints on both units: `/`, `/api/status`, `/api/gpio/set?pin=N&level=0|1
   "rssi": -62,    "ch": 1
 }
 ```
-Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running. `rssi` = MasterHonda's WiFi signal strength in dBm (from `esp_wifi_sta_get_ap_info()`); `ch` = its current WiFi/ESP-NOW channel (`wifi_ap_record_t.primary`). Both read 0 if not connected.
+Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running. `rssi` = MasterRemote's WiFi signal strength in dBm (from `esp_wifi_sta_get_ap_info()`); `ch` = its current WiFi/ESP-NOW channel (`wifi_ap_record_t.primary`). Both read 0 if not connected.
 
 ---
 
@@ -417,7 +419,7 @@ Each unit's version is defined independently in `main/version.h`:
 
 ```c
 #define FIRMWARE_VERSION  "1.0.0"
-#define FIRMWARE_NAME     "MasterHonda"   // SlaveHonda / SlaveWallas
+#define FIRMWARE_NAME     "MasterRemote"   // SlaveHonda / SlaveWallas
 ```
 
 ### Version scheme: `MAJOR.MINOR.PATCH`
@@ -433,21 +435,28 @@ Each unit's version is defined independently in `main/version.h`:
 ### Release bin naming
 
 ```
-MasterHonda_v1.0.0.bin
+MasterRemote_v1.0.0.bin
 SlaveHonda_v1.0.0.bin
 SlaveWallas_v1.0.0.bin
 ```
 
+### Release version vs. per-unit version
+
+There are two independent version numbers in play:
+
+- **Per-unit `FIRMWARE_VERSION`** — bumped independently for each unit, following the MAJOR.MINOR.PATCH rule above, whenever that specific unit's firmware changes. This is what ships in each `.bin` filename and what each unit reports about itself.
+- **Release version** — the git tag (`vX.Y.Z`, e.g. `v1.5.0`) used to cut a combined GitHub Release bundling all three units' *current* binaries together, whatever their individual versions happen to be at that point. It does not force the three units onto the same number.
+
 ### GitHub Actions CI/CD
 
-Pushing a version tag triggers `.github/workflows/release.yml`, which builds affected units using `espressif/esp-idf-ci-action@v1` (pinned to ESP-IDF v6.0.1 via `env.IDF_VERSION`) and attaches the `.bin` files to a GitHub Release.
+Pushing a tag triggers `.github/workflows/release.yml`, which builds the affected unit(s) using `espressif/esp-idf-ci-action@v1` (pinned to ESP-IDF v6.0.1 via `env.IDF_VERSION`) and attaches the `.bin` files to a GitHub Release.
 
-| Tag pattern  | Units built                      |
-|--------------|----------------------------------|
-| `v*`         | All three                        |
-| `master-v*`  | MasterHonda only                 |
-| `honda-v*`   | SlaveHonda only                  |
-| `wallas-v*`  | SlaveWallas only                 |
+| Tag pattern  | Units built                      | Use for |
+|--------------|----------------------------------|---------|
+| `v*`         | All three                        | **Standard practice** — one combined release bundling all three units' current binaries |
+| `master-v*`  | MasterRemote only                 | Single-unit hotfix only |
+| `honda-v*`   | SlaveHonda only                  | Single-unit hotfix only |
+| `wallas-v*`  | SlaveWallas only                 | Single-unit hotfix only |
 
 First flash must be done via USB. OTA handles all subsequent updates.
 
@@ -455,7 +464,7 @@ First flash must be done via USB. OTA handles all subsequent updates.
 
 ## 9. Startup Sequence
 
-### 9.1 MasterHonda & SlaveWallas (WiFi-mandatory units)
+### 9.1 MasterRemote & SlaveWallas (WiFi-mandatory units)
 
 ```
 app_main()
@@ -474,10 +483,10 @@ app_main()
   │
   ├─ espnow_init()
   │     ├─ esp_now_init(), esp_now_register_recv_cb()/send_cb()
-  │     └─ esp_now_add_peer(BROADCAST_MAC)   — fixed, for beacon (MasterHonda) / listening (SlaveWallas)
+  │     └─ esp_now_add_peer(BROADCAST_MAC)   — fixed, for beacon (MasterRemote) / listening (SlaveWallas)
   │
-  ├─ MasterHonda: xTaskCreate(beacon_task)     — broadcasts master_beacon_t every 2 s (§3.2)
-  ├─ MasterHonda: xTaskCreate(master_task)     — sends to registered role peers, roster maintenance
+  ├─ MasterRemote: xTaskCreate(beacon_task)     — broadcasts master_beacon_t every 2 s (§3.2)
+  ├─ MasterRemote: xTaskCreate(master_task)     — sends to registered role peers, roster maintenance
   ├─ SlaveWallas: xTaskCreate(heartbeat_task)  — listens for beacon → registers → periodic heartbeat
   │
   └─ [FreeRTOS scheduler runs tasks]
@@ -515,15 +524,15 @@ app_main()
 | Condition                                        | Behaviour                                               |
 |---------------------------------------------------|-----------------------------------------------------------|
 | No NVS credentials on boot (any unit)              | SoftAP portal opened; restarts after credentials saved   |
-| WiFi connect timeout (15 s) — MasterHonda/SlaveWallas | Portal opened (WiFi is mandatory for these units)     |
+| WiFi connect timeout (15 s) — MasterRemote/SlaveWallas | Portal opened (WiFi is mandatory for these units)     |
 | WiFi connect timeout (15 s) — SlaveHonda, creds exist | No portal; falls back to ESP-NOW channel scan (§3.2/§9.2) |
-| SlaveHonda: no MasterHonda beacon found            | Channel scan repeats indefinitely (§3.4); unit has no IP/web UI meanwhile |
+| SlaveHonda: no MasterRemote beacon found            | Channel scan repeats indefinitely (§3.4); unit has no IP/web UI meanwhile |
 | ESP-NOW init failure                               | `esp_restart()`                                          |
 | Peer add failure                                   | `ESP_LOGE` log, execution continues                       |
-| MasterHonda reboots (roster lost)                  | Self-healing: next heartbeat after each slave's next beacon re-registers it (§3.2), no manual pairing |
+| MasterRemote reboots (roster lost)                  | Self-healing: next heartbeat after each slave's next beacon re-registers it (§3.2), no manual pairing |
 | OTA write error / client aborts mid-upload         | `esp_ota_abort()`, HTTP 500 returned, no reboot. Up to 5 consecutive recv timeouts tolerated before aborting (§8) — a hard client abort no longer wedges the httpd worker indefinitely |
 | Honda: no running feedback                         | Slave reports `HondaRunning = false`; master may retry after 30 s block |
-| Master: no slave heartbeat (node stale, 30 s)       | Nodes tab shows "disconnected"; MasterHonda stops sending to that role until it re-registers |
+| Master: no slave heartbeat (node stale, 30 s)       | Nodes tab shows "disconnected"; MasterRemote stops sending to that role until it re-registers |
 | SlaveHonda blocking start                          | Web server unresponsive for ~14 s during ignition warm-up + crank; expected behaviour (n/a while in ESP-NOW fallback — no web server) |
 
 ---
@@ -533,13 +542,13 @@ app_main()
 ### Prerequisites
 
 - ESP-IDF v6.0.1 installed and sourced (`idf.py` on PATH)
-- MasterHonda/SlaveHonda: ESP32 board connected via USB. SlaveWallas: ESP32-C6 board connected via USB (native USB-Serial/JTAG, no separate UART chip needed).
+- MasterRemote/SlaveHonda: ESP32 board connected via USB. SlaveWallas: ESP32-C6 board connected via USB (native USB-Serial/JTAG, no separate UART chip needed).
 
 ### Commands
 
 ```bash
 # Build
-cd MasterHonda          # or SlaveHonda / SlaveWallas
+cd MasterRemote          # or SlaveHonda / SlaveWallas
 idf.py set-target esp32c6   # SlaveWallas only, first build
 idf.py build
 
@@ -561,11 +570,11 @@ Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). 
 
 ## 12. Known Limitations
 
-- ESP-NOW channel is derived from the connected WiFi AP for MasterHonda, SlaveWallas, and SlaveHonda-with-WiFi. If the router changes channel (unusual), those units must restart to re-sync. A SlaveHonda that is channel-scanning (no WiFi) is unaffected by router channel changes — it always finds Master's current channel by scanning — but if it has already locked on and Master's channel then changes mid-session, it loses sync until it restarts and rescans.
-- The discovery beacon (§3.2) and all ESP-NOW traffic are unauthenticated and unencrypted (`peer.encrypt = false`, §3.1). Any device on channel range broadcasting a spoofed `master_beacon_t` (`label = "MasterHonda"`) could get a SlaveHonda/SlaveWallas to register it as Master and accept forged start/stop commands. This was a smaller risk with fixed custom-MAC peer allowlisting; moving to role-based discovery over broadcast increases it. Mitigate with per-peer AES + LMK (§3.1) if this is a concern for the deployment.
+- ESP-NOW channel is derived from the connected WiFi AP for MasterRemote, SlaveWallas, and SlaveHonda-with-WiFi. If the router changes channel (unusual), those units must restart to re-sync. A SlaveHonda that is channel-scanning (no WiFi) is unaffected by router channel changes — it always finds Master's current channel by scanning — but if it has already locked on and Master's channel then changes mid-session, it loses sync until it restarts and rescans.
+- The discovery beacon (§3.2) and all ESP-NOW traffic are unauthenticated and unencrypted (`peer.encrypt = false`, §3.1). Any device on channel range broadcasting a spoofed `master_beacon_t` (`label = "MasterRemote"`) could get a SlaveHonda/SlaveWallas to register it as Master and accept forged start/stop commands. This was a smaller risk with fixed custom-MAC peer allowlisting; moving to role-based discovery over broadcast increases it. Mitigate with per-peer AES + LMK (§3.1) if this is a concern for the deployment.
 - `HondaStart` in `master_msg_t` carries the Wallas command to `SlaveWallas` (struct reuse from the original design). A future version should introduce a dedicated `wallas_cmd_t` message.
 - During OTA upload (~10–30 s depending on file size), the HTTP server task is busy; ESP-NOW receive callbacks still fire but any response sends from that task are deferred.
 - The SoftAP portal's network scan (§4) is capped at 20 results and only lists SSID/RSSI/auth-type — it does not indicate whether a network was previously seen or is the vessel's own router specifically.
 - SlaveHonda has no web UI/OTA access while running WiFi-less (§6.2) — it must reach WiFi at least once (or be freshly flashed via USB) to receive an OTA update.
 - Old firmware (custom MAC, hardcoded peer table) cannot interoperate with new discovery-based firmware (§8) — all three units must be upgraded together.
-- `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output only, input not enabled) does not reliably read back the pin's actual driven state on ESP-IDF — this affects any status-API field that re-reads an output pin instead of tracking its own commanded state (e.g. SlaveWallas's `relay` field in `/api/status`, MasterHonda's `pFB`). Do not treat these fields as proof of true physical pin state; the GPIO23 heater indicator LED (§2.4) exists specifically to give SlaveWallas's relay a trustworthy hardware-level readout that doesn't depend on this.
+- `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output only, input not enabled) does not reliably read back the pin's actual driven state on ESP-IDF — this affects any status-API field that re-reads an output pin instead of tracking its own commanded state (e.g. SlaveWallas's `relay` field in `/api/status`, MasterRemote's `pFB`). Do not treat these fields as proof of true physical pin state; the GPIO23 heater indicator LED (§2.4) exists specifically to give SlaveWallas's relay a trustworthy hardware-level readout that doesn't depend on this.

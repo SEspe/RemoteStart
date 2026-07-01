@@ -17,7 +17,7 @@
  * factory MAC. WiFi is preferred (same as the other units) but the generator
  * location may be out of router range: if the WiFi connect attempt fails,
  * this unit does NOT reopen the config portal — instead it scans ESP-NOW
- * channels for MasterHonda's discovery beacon and operates without an IP.
+ * channels for MasterRemote's discovery beacon and operates without an IP.
  * See FSD_RemoteStart.md §3.2 / §9.2.
  */
 
@@ -71,7 +71,7 @@ typedef struct {
 } master_msg_t;
 
 typedef struct {
-    char  label[32];   /* "MasterHonda" */
+    char  label[32];   /* "MasterRemote" */
 } master_beacon_t;      /* broadcast-only, discovery */
 
 typedef struct {
@@ -81,7 +81,7 @@ typedef struct {
     bool  HondaRunning;
     char  ip[16];
     bool  has_wifi;
-    int8_t  rssi;      /* RSSI of last frame heard from MasterHonda, dBm */
+    int8_t  rssi;      /* RSSI of last frame heard from MasterRemote, dBm */
     uint8_t channel;   /* channel that frame was received on */
     char    fw_version[12];
 } slave_msg_t;
@@ -96,7 +96,7 @@ volatile bool g_start_cmd    = false;
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
 static bool    s_master_known   = false;
-static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterHonda */
+static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterRemote */
 static uint8_t s_link_channel   = 0;
 
 /* ── WiFi ────────────────────────────────────────────────────────────────────── */
@@ -272,7 +272,7 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
     if (len == (int)sizeof(master_beacon_t)) {
         master_beacon_t beacon;
         memcpy(&beacon, data, sizeof(beacon));
-        if (strncmp(beacon.label, "MasterHonda", 11) == 0 &&
+        if (strncmp(beacon.label, "MasterRemote", 12) == 0 &&
             (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0)) {
             memcpy(s_master_mac, info->src_addr, 6);
             espnow_add_peer(s_master_mac);
@@ -301,13 +301,13 @@ static void espnow_init(void) {
     esp_now_init();
     esp_now_register_send_cb(espnow_send_cb);
     esp_now_register_recv_cb(espnow_recv_cb);
-    ESP_LOGI(TAG, "ESP-NOW ready, listening for MasterHonda beacon");
+    ESP_LOGI(TAG, "ESP-NOW ready, listening for MasterRemote beacon");
 }
 
-/* Blocks until a MasterHonda beacon is heard, cycling through all 2.4 GHz
+/* Blocks until a MasterRemote beacon is heard, cycling through all 2.4 GHz
  * channels. Used only when WiFi connect failed (§3.2). Retries forever. */
 static void espnow_channel_scan(void) {
-    ESP_LOGW(TAG, "Starting ESP-NOW channel scan for MasterHonda");
+    ESP_LOGW(TAG, "Starting ESP-NOW channel scan for MasterRemote");
     for (;;) {
         for (uint8_t ch = 1; ch <= SCAN_CHANNEL_COUNT; ch++) {
             esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
@@ -321,7 +321,7 @@ static void espnow_channel_scan(void) {
                 return;
             }
         }
-        ESP_LOGW(TAG, "Full channel scan found no MasterHonda beacon — retrying");
+        ESP_LOGW(TAG, "Full channel scan found no MasterRemote beacon — retrying");
     }
 }
 
@@ -376,7 +376,7 @@ void app_main(void)
     espnow_init();
 
     if (!g_has_wifi) {
-        espnow_channel_scan();   /* blocks until MasterHonda is found */
+        espnow_channel_scan();   /* blocks until MasterRemote is found */
     }
 
     xTaskCreate(status_task,    "status",    3072, NULL, 4, NULL);

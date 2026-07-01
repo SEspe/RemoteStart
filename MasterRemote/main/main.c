@@ -1,5 +1,5 @@
 /*
- * MasterHonda — ESP32 Master Remote Start Controller
+ * MasterRemote — ESP32 Master Remote Start Controller
  * Author: Stein Espe
  * Framework: ESP-IDF v6.x
  *
@@ -7,11 +7,11 @@
  * Flash:  idf.py -p COMx flash monitor
  * OTA:    http://<device-ip>/ota  (after first WiFi setup)
  *
- * First startup: connect to "MasterHonda-Config" WiFi (pw: honda1234),
+ * First startup: connect to "MasterRemote-Config" WiFi (pw: honda1234),
  *   open 192.168.4.1, enter your router credentials.
  *
  * Peer discovery: no custom/hardcoded MAC addresses. Each unit uses its own
- * factory MAC. MasterHonda broadcasts a beacon; slaves that hear it learn
+ * factory MAC. MasterRemote broadcasts a beacon; slaves that hear it learn
  * Master's MAC and register themselves via their normal heartbeat — see
  * FSD_RemoteStart.md §3.2.
  */
@@ -67,7 +67,7 @@ typedef struct {
 } master_msg_t;
 
 typedef struct {
-    char  label[32];   /* "MasterHonda" */
+    char  label[32];   /* "MasterRemote" */
 } master_beacon_t;      /* broadcast-only, discovery */
 
 typedef struct {
@@ -348,7 +348,7 @@ static void espnow_init(void)
 static void send_beacon(void)
 {
     master_beacon_t beacon = {0};
-    strlcpy(beacon.label, "MasterHonda", sizeof(beacon.label));
+    strlcpy(beacon.label, "MasterRemote", sizeof(beacon.label));
     esp_now_send(BROADCAST_MAC, (uint8_t *)&beacon, sizeof(beacon));
 }
 

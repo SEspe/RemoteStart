@@ -1,5 +1,5 @@
 /*
- * MasterHonda web_server.c
+ * MasterRemote web_server.c
  * Serves: WiFi setup portal, pin status API, nodes API, OTA upload.
  * Three-tab UI: Pin Status | Nodes | OTA Update
  */
@@ -122,7 +122,7 @@ static const char WIFI_SETUP_HTML[] =
 static const char INDEX_HTML_TMPL[] =
 "<!DOCTYPE html><html lang='en'><head>"
 "<meta charset='UTF-8'><meta name='viewport' content='width=device-width,initial-scale=1'>"
-"<title>MasterHonda</title>"
+"<title>MasterRemote</title>"
 "<style>"
 "*{box-sizing:border-box;margin:0;padding:0}"
 "body{font-family:Arial,sans-serif;background:#1a1a2e;color:#eee}"
@@ -158,7 +158,7 @@ static const char INDEX_HTML_TMPL[] =
 "button.up{padding:8px 20px;background:#e94560;border:none;border-radius:5px;"
 "color:#fff;cursor:pointer;font-size:.9rem}"
 "</style></head><body>"
-"<div class='hdr'><h1>&#9889; MasterHonda</h1>"
+"<div class='hdr'><h1>&#9889; MasterRemote</h1>"
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Pin Status</button>"

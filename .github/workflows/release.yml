@@ -4,7 +4,7 @@ on:
   push:
     tags:
       - 'v*'         # e.g. v1.0.0  → builds all three units
-      - 'master-v*'  # e.g. master-v1.1.0 → MasterHonda only
+      - 'master-v*'  # e.g. master-v1.1.0 → MasterRemote only
       - 'honda-v*'   # e.g. honda-v1.0.1  → SlaveHonda only
       - 'wallas-v*'  # e.g. wallas-v1.0.2 → SlaveWallas only
 
@@ -13,7 +13,7 @@ env:
 
 jobs:
   build-master:
-    name: Build MasterHonda
+    name: Build MasterRemote
     runs-on: ubuntu-latest
     if: startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'master-')
     steps:
@@ -24,18 +24,18 @@ jobs:
         with:
           esp_idf_version: ${{ env.IDF_VERSION }}
           target: esp32
-          path: MasterHonda
+          path: MasterRemote
           command: idf.py build
 
       - name: Extract version & rename bin
         run: |
-          VER=$(grep 'FIRMWARE_VERSION' MasterHonda/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
-          cp MasterHonda/build/MasterHonda.bin MasterHonda_v${VER}.bin
-          echo "BIN=MasterHonda_v${VER}.bin" >> $GITHUB_ENV
+          VER=$(grep 'FIRMWARE_VERSION' MasterRemote/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          cp MasterRemote/build/MasterRemote.bin MasterRemote_v${VER}.bin
+          echo "BIN=MasterRemote_v${VER}.bin" >> $GITHUB_ENV
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MasterHonda
+          name: MasterRemote
           path: ${{ env.BIN }}
 
   build-honda:
@@ -110,7 +110,7 @@ jobs:
           name: Release ${{ github.ref_name }}
           body: |
             ## Firmware Release ${{ github.ref_name }}
-            Built with ESP-IDF ${{ env.IDF_VERSION }}. MasterHonda/SlaveHonda target ESP32; SlaveWallas targets ESP32-C6.
+            Built with ESP-IDF ${{ env.IDF_VERSION }}. MasterRemote/SlaveHonda target ESP32; SlaveWallas targets ESP32-C6.
 
             ### Flash via OTA
             1. Open device web UI → **OTA Update** tab
@@ -123,7 +123,7 @@ jobs:
             ```
             or with esptool:
             ```
-            esptool.py --chip esp32 -p COMx write_flash 0x10000 MasterHonda_<ver>.bin      # MasterHonda / SlaveHonda
+            esptool.py --chip esp32 -p COMx write_flash 0x10000 MasterRemote_<ver>.bin      # MasterRemote / SlaveHonda
             esptool.py --chip esp32c6 -p COMx write_flash 0x10000 SlaveWallas_<ver>.bin    # SlaveWallas
             ```
           files: artifacts/*.bin
