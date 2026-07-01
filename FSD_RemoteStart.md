@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.14  
+**Version:** 1.15  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.15 — Cleaned up the 18 old per-unit GitHub Releases (`master-v*`/`honda-v*`/`wallas-v*`) left over from before the release reorg in v1.13 — each was a single-binary release that cluttered the Releases page and risked someone downloading a stale, possibly protocol-incompatible `.bin` by mistake. Deleted the *releases* (and their uploaded binaries) but kept the underlying *git tags* — no history was lost, `git checkout <tag>` still works for all of them. `v1.5.0` is now the only entry on the Releases page. No firmware or doc content changed.
 - v1.14 — Renamed the master unit from **MasterHonda** to **MasterRemote** throughout: project directory (`MasterHonda/` → `MasterRemote/`, git history preserved via `git mv`), `FIRMWARE_NAME`, config-portal AP SSID (`MasterRemote-Config`), CMake project name, HTML page title/header, and every mention in this document, the README, and CI workflow. `NVS_NAMESPACE` was deliberately left as `"mhonda"` so the already-deployed unit keeps its stored WiFi credentials across the update. **Breaking change**: the discovery beacon's identity string changed length (`"MasterHonda"` = 11 chars → `"MasterRemote"` = 12 chars) and both slaves' `strncmp()` match against it — all three units must be reflashed together, or SlaveHonda/SlaveWallas will stop recognizing the beacon and lose discovery. Historical changelog entries below still say "MasterHonda" for the versions where that was the current name.
 - v1.13 — Reorganized releases: introduced a release-level version, independent of each unit's own `FIRMWARE_VERSION` (which keep incrementing independently per unit, unchanged by this reorg). All three units are now released together under one combined git tag/GitHub Release at the release version (e.g. `v1.5.0`) instead of separate `master-v*`/`honda-v*`/`wallas-v*` tags — the CI workflow already supported this (a `v*` tag builds all three and attaches all three `.bin` files, each still named with its own unit's version, to one GitHub Release); the per-unit tag patterns just hadn't been in active use this session. Per-unit tags remain available in CI for a genuine single-unit hotfix, but `v*` is now the standard release path. See §8.
 - v1.12 — SlaveHonda gains a Debug GPIO tab, mirroring SlaveWallas's (same `GET /api/gpio/set`/`GET /api/gpio/status` design), adapted for the ESP32-classic pin map: manipulable subset is GPIO 4,13,14,16-19,21-23,25-27,32,33; reserved-and-status-only covers strapping (0,2,5,12,15), embedded flash (6-11), UART0 console (1,3), and input-only pins (34-39). Status dots cover the full GPIO 0-39 range. SlaveWallas's regular Status tab gains a lamp-style row for the GPIO23 heater indicator LED (was previously only visible via the Debug tab, not the normal status view).
@@ -459,6 +460,8 @@ Pushing a tag triggers `.github/workflows/release.yml`, which builds the affecte
 | `wallas-v*`  | SlaveWallas only                 | Single-unit hotfix only |
 
 First flash must be done via USB. OTA handles all subsequent updates.
+
+> **Housekeeping:** if per-unit tags accumulate single-binary GitHub Releases again (e.g. from hotfixing one unit), it's fine to periodically delete the *releases* to keep the Releases page focused on real combined `v*` releases — just don't pass `--cleanup-tag` to `gh release delete`, so the underlying git tags (useful for `git checkout <tag>` history) survive.
 
 ---
 
