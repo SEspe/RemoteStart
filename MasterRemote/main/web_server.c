@@ -28,6 +28,7 @@ extern volatile bool g_honda_start_cmd;
 extern volatile bool g_wallas_start_cmd;
 extern volatile bool g_web_honda_start;
 extern volatile bool g_web_wallas_start;
+extern volatile bool g_honda_force_send;
 extern          bool g_slave_honda_running;
 
 /* Layout must match main.c's slave_info_t exactly (shared via extern, not a header). */
@@ -374,6 +375,7 @@ static esp_err_t h_honda_start(httpd_req_t *req)
 {
     g_web_honda_start = true;
     g_honda_start_cmd = true;
+    g_honda_force_send = true;   /* guarantee a send even if last-known state already reads "running" */
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -382,6 +384,7 @@ static esp_err_t h_honda_stop(httpd_req_t *req)
 {
     g_web_honda_start = false;
     g_honda_start_cmd = gpio_get_level(PIN_HONDA_MANUAL_START) || !gpio_get_level(PIN_HONDA_START);
+    g_honda_force_send = true;   /* guarantee a send even if last-known state already reads "stopped" */
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }

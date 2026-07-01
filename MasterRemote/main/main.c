@@ -104,6 +104,15 @@ volatile bool g_wallas_start_cmd = false;
 volatile bool g_web_honda_start  = false;
 volatile bool g_web_wallas_start = false;
 
+/* Set by the web handlers on every manual button press. Honda's normal send
+ * gate only fires on a MISMATCH between g_honda_start_cmd and Master's last
+ * -known slave running state -- if that state happens to already equal the
+ * new command (e.g. a stale/unconnected running-feedback pin reading as
+ * "running"), a manual press would otherwise be silently swallowed. This
+ * flag forces one send regardless, bypassing both the mismatch check and
+ * the restart-block cooldown, then clears itself. */
+volatile bool g_honda_force_send = false;
+
 /* ── Slave Roster (populated dynamically by ESP-NOW recv callback) ─────────── */
 typedef struct {
     uint8_t  mac[6];
@@ -458,10 +467,13 @@ static void master_task(void *arg)
     for (;;) {
         int64_t now = esp_timer_get_time();
 
-        /* Honda: send when desired ≠ actual and restart block has elapsed */
-        if ((g_honda_start_cmd != g_slave_honda_running) &&
-            ((now - last_honda_send_us) >= (int64_t)HONDA_RESTART_BLOCK_MS * 1000)) {
+        /* Honda: send when desired ≠ actual and restart block has elapsed,
+         * or unconditionally once if a manual web button just forced it. */
+        if ((g_honda_force_send ||
+             ((g_honda_start_cmd != g_slave_honda_running) &&
+              (now - last_honda_send_us) >= (int64_t)HONDA_RESTART_BLOCK_MS * 1000))) {
             last_honda_send_us = now;
+            g_honda_force_send = false;
             send_to_honda();
         }
 
