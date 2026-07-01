@@ -113,6 +113,7 @@ static const char INDEX_HTML[] =
 ".led{width:12px;height:12px;border-radius:50%}"
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
+".dim{color:#666}"
 ".warn{font-size:.78rem;color:#e9b400;margin-bottom:10px}"
 ".dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}"
 ".dbg .row{flex-direction:column;align-items:stretch;gap:4px}"
@@ -140,9 +141,10 @@ static const char INDEX_HTML[] =
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>Manual GPIO Test</h3>"
-"<p class='warn'>Hardware bring-up only. Forces a pin to OUTPUT and drives it "
-"high/low, overriding normal operation until next reboot. Reserved pins "
-"(strapping: 4,5,8,9,15; USB-JTAG: 12,13) are not listed.</p>"
+"<p class='warn'>Hardware bring-up only. Every GPIO's live level is shown as a "
+"dot (green = HIGH). Pins with ON/OFF buttons can be forced to OUTPUT and "
+"driven, overriding normal operation until next reboot. Reserved pins "
+"(strapping: 4,5,8,9,15; USB-JTAG: 12,13) show status only, no buttons.</p>"
 "<div class='dbg' id='dbg'>…</div></div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
@@ -170,11 +172,20 @@ static const char INDEX_HTML[] =
 "var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
 "function buildDbg(){"
 "var h='';"
-"DBG_PINS.forEach(function(p){"
-"h+='<div class=\"row\"><span>GPIO'+p+'</span>"
-"<span class=\"btns\"><button class=\"go go-on\" onclick=\"gset('+p+',1)\">ON</button>"
-"<button class=\"go go-off\" onclick=\"gset('+p+',0)\">OFF</button></span></div>';});"
+"for(var p=0;p<=30;p++){"
+"var manip=DBG_PINS.indexOf(p)!==-1;"
+"var ctl=manip?"
+"'<span class=\"btns\"><button class=\"go go-on\" onclick=\"gset('+p+',1)\">ON</button>"
+"<button class=\"go go-off\" onclick=\"gset('+p+',0)\">OFF</button></span>':"
+"'<span class=\"dim\" style=\"font-size:.7rem\">reserved</span>';"
+"h+='<div class=\"row\"><span><span class=\"led off-l\" id=\"dl'+p+'\"></span> GPIO'+p+'</span>'+ctl+'</div>';}"
 "document.getElementById('dbg').innerHTML=h;}"
+"function fetchDbg(){"
+"fetch('/api/gpio/status').then(r=>r.json()).then(d=>{"
+"d.lvl.forEach(function(v,p){"
+"var el=document.getElementById('dl'+p);"
+"if(el)el.className='led '+(v?'on-l':'off-l');});"
+"}).catch(()=>{});}"
 "function gset(pin,level){fetch('/api/gpio/set?pin='+pin+'&level='+level).catch(()=>{});}"
 "function upload(){"
 "const f=document.getElementById('fw').files[0];"
@@ -190,9 +201,11 @@ static const char INDEX_HTML[] =
 "xhr.send(f);}"
 "setInterval(()=>{"
 "if(document.getElementById('status').classList.contains('on'))fetchStatus();"
+"if(document.getElementById('debug').classList.contains('on'))fetchDbg();"
 "},2000);"
 "fetchStatus();"
 "buildDbg();"
+"fetchDbg();"
 "</script></body></html>";
 
 /* ── Handlers ────────────────────────────────────────────────────────────────── */
@@ -316,6 +329,22 @@ static esp_err_t h_gpio_set(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/gpio/status  ── DEBUG ONLY: read-only level of every GPIO 0-30,
+ * for the Debug tab's status dots. gpio_get_level() is passive (just reads
+ * the GPIO_IN register) so this is safe to call even on reserved pins
+ * (strapping, USB-JTAG) -- unlike h_gpio_set, it never reconfigures a pin. */
+static esp_err_t h_gpio_status(httpd_req_t *req)
+{
+    char buf[160];
+    int n = snprintf(buf, sizeof(buf), "{\"lvl\":[");
+    for (int i = 0; i <= 30 && n < (int)sizeof(buf) - 4; i++)
+        n += snprintf(buf + n, sizeof(buf) - n, "%s%d", i ? "," : "", gpio_get_level(i));
+    snprintf(buf + n, sizeof(buf) - n, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* GET /api/scan  ── WiFi scan, returns JSON array */
 static esp_err_t h_scan(httpd_req_t *req)
 {
@@ -372,16 +401,17 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server=NULL;
     httpd_config_t cfg=HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers=8; cfg.stack_size=6144;
+    cfg.max_uri_handlers=9; cfg.stack_size=6144;
     if (httpd_start(&server,&cfg) != ESP_OK) { ESP_LOGE(TAG,"Start failed"); return ESP_FAIL; }
     static const httpd_uri_t routes[]={
-        {.uri="/",             .method=HTTP_GET,  .handler=h_root      },
-        {.uri="/api/status",   .method=HTTP_GET,  .handler=h_status    },
-        {.uri="/api/gpio/set", .method=HTTP_GET,  .handler=h_gpio_set  },
-        {.uri="/wifi-setup",   .method=HTTP_GET,  .handler=h_wifi_setup},
-        {.uri="/wifi-save",    .method=HTTP_POST, .handler=h_wifi_save },
-        {.uri="/api/scan",     .method=HTTP_GET,  .handler=h_scan      },
-        {.uri="/ota/upload",   .method=HTTP_POST, .handler=h_ota_upload},
+        {.uri="/",                .method=HTTP_GET,  .handler=h_root        },
+        {.uri="/api/status",      .method=HTTP_GET,  .handler=h_status      },
+        {.uri="/api/gpio/set",    .method=HTTP_GET,  .handler=h_gpio_set    },
+        {.uri="/api/gpio/status", .method=HTTP_GET,  .handler=h_gpio_status },
+        {.uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },
+        {.uri="/wifi-save",       .method=HTTP_POST, .handler=h_wifi_save   },
+        {.uri="/api/scan",        .method=HTTP_GET,  .handler=h_scan        },
+        {.uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
     };
     for(size_t i=0;i<sizeof(routes)/sizeof(routes[0]);i++)
         httpd_register_uri_handler(server,&routes[i]);
