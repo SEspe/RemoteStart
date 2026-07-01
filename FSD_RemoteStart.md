@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.4  
+**Version:** 1.5  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.5 — Fixed an OTA upload bug on all three units: `h_ota_upload()` retried `httpd_req_recv()` forever on a timeout instead of giving up, so a client aborting mid-upload could permanently wedge the httpd worker (and, since there's only one, the entire web server) until a USB reflash. Now bounded to 5 consecutive timeouts before aborting cleanly. SlaveWallas: moved `PIN_WALLAS_FB` off GPIO13 (reserved for native USB-Serial/JTAG D+, §2.4) to GPIO18.
 - v1.4 — SlaveWallas: fixed heater relay pin (GPIO0 → GPIO16, matches actual wiring); added a GPIO23 indicator LED that mirrors the relay output for hardware-level confirmation. MasterHonda: added WiFi signal strength (RSSI) and channel to the Pin Status tab / `/api/status`
 - v1.3 — Removed custom MAC addressing; units now self-discover peers by function role over ESP-NOW. SlaveHonda gains a WiFi-optional fallback (ESP-NOW channel scan for MasterHonda when it cannot reach the router). MasterHonda's Clients tab becomes a Nodes tab (MAC, IP, connected status, last seen). **Breaking change** — see §3.2 and §12.
 - v1.2 — Migrated firmware and CI to ESP-IDF v6.0.1; SlaveWallas moved to ESP32-C6; added WiFi network scan to the config portal
@@ -77,8 +78,10 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 |------|-----------|------------------------------------------|
 | 16   | OUTPUT    | Wallas heater relay (HIGH = heater ON)   |
 |  2   | OUTPUT    | Onboard LED (fast blink when running)    |
-| 13   | INPUT     | Wallas running feedback (HIGH = running) |
+| 18   | INPUT     | Wallas running feedback (HIGH = running) |
 | 23   | OUTPUT    | Heater indicator LED (mirrors relay, HIGH = heater ON) |
+
+> **Reserved — do not use as GPIO:** GPIO12/13 are hard-wired to the ESP32-C6's native USB-Serial/JTAG peripheral (D-/D+, used for console + flashing, §11). Configuring either as a regular GPIO can disconnect that pad from USB while the app is running, breaking live console/monitor access. (`PIN_WALLAS_FB` was originally GPIO13 and was moved to GPIO18 for exactly this reason — this likely explains earlier serial-connectivity flakiness with this unit before the move.)
 
 > **GPIO23 indicator LED:** wired directly alongside the relay output (set together in `wallas_start()`/`wallas_stop()`), giving a physical, hardware-level confirmation of the relay command independent of software status polling — added because `gpio_get_level()` on an output-only-configured pin (e.g. the relay pin itself, §12) cannot reliably report back its own driven state, so the API's `relay` field should not be trusted as proof of physical relay state.
 
@@ -491,7 +494,7 @@ app_main()
 | ESP-NOW init failure                               | `esp_restart()`                                          |
 | Peer add failure                                   | `ESP_LOGE` log, execution continues                       |
 | MasterHonda reboots (roster lost)                  | Self-healing: next heartbeat after each slave's next beacon re-registers it (§3.2), no manual pairing |
-| OTA write error                                    | `esp_ota_abort()`, HTTP 500 returned, no reboot            |
+| OTA write error / client aborts mid-upload         | `esp_ota_abort()`, HTTP 500 returned, no reboot. Up to 5 consecutive recv timeouts tolerated before aborting (§8) — a hard client abort no longer wedges the httpd worker indefinitely |
 | Honda: no running feedback                         | Slave reports `HondaRunning = false`; master may retry after 30 s block |
 | Master: no slave heartbeat (node stale, 30 s)       | Nodes tab shows "disconnected"; MasterHonda stops sending to that role until it re-registers |
 | SlaveHonda blocking start                          | Web server unresponsive for ~14 s during ignition warm-up + crank; expected behaviour (n/a while in ESP-NOW fallback — no web server) |

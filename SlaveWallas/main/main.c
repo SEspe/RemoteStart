@@ -9,8 +9,11 @@
  * Pin assignments:
  *   GPIO 16  OUTPUT — Wallas heater relay  (HIGH = relay ON = heater running)
  *   GPIO  2  OUTPUT — Onboard LED (fast blink when heater running)
- *   GPIO 13  INPUT  — Wallas running feedback (HIGH = running)
+ *   GPIO 18  INPUT  — Wallas running feedback (HIGH = running)
  *   GPIO 23  OUTPUT — Heater indicator LED (mirrors relay, HIGH = heater ON)
+ *
+ * GPIO12/13 are reserved for the native USB-Serial/JTAG console (D-/D+) and
+ * must not be used as regular GPIO — see FSD_RemoteStart.md §2.4.
  *
  * Peer discovery: no custom/hardcoded MAC addresses. This unit uses its own
  * factory MAC, listens for MasterHonda's discovery beacon, and registers
@@ -46,7 +49,7 @@ static const char *TAG = FIRMWARE_NAME;
 /* ── Pins ────────────────────────────────────────────────────────────────────── */
 #define PIN_WALLAS_RELAY   GPIO_NUM_16   /* HIGH = heater ON           */
 #define PIN_STATUS_LED     GPIO_NUM_2    /* onboard LED                */
-#define PIN_WALLAS_FB      GPIO_NUM_13   /* HIGH = heater running      */
+#define PIN_WALLAS_FB      GPIO_NUM_18   /* HIGH = heater running      */
 #define PIN_HEATER_LED     GPIO_NUM_23   /* indicator LED, mirrors relay */
 
 /* ── Timing ──────────────────────────────────────────────────────────────────── */

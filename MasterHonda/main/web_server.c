@@ -391,13 +391,17 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     char buf[1024];
     int  remaining = req->content_len;
     bool ok = true;
+    int  timeout_retries = 0;
 
     while (remaining > 0) {
         int got = httpd_req_recv(req, buf, MIN(remaining, (int)sizeof(buf)));
         if (got <= 0) {
-            if (got == HTTPD_SOCK_ERR_TIMEOUT) continue;
+            /* Bounded retry: tolerate brief stalls, but never hang the httpd
+             * worker forever if the client vanishes mid-upload. */
+            if (got == HTTPD_SOCK_ERR_TIMEOUT && ++timeout_retries < 5) continue;
             ok = false; break;
         }
+        timeout_retries = 0;
         if (esp_ota_write(ota, buf, got) != ESP_OK) { ok = false; break; }
         remaining -= got;
     }
