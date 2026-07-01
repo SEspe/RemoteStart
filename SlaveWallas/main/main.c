@@ -7,7 +7,7 @@
  * Flash:  idf.py -p COMx flash monitor
  *
  * Pin assignments:
- *   GPIO 16  OUTPUT — Wallas heater relay  (HIGH = relay ON = heater running)
+ *   GPIO 19  OUTPUT — Wallas heater relay  (HIGH = relay ON = heater running)
  *   GPIO  2  OUTPUT — Onboard LED (fast blink when heater running)
  *   GPIO 18  INPUT  — Wallas running feedback (HIGH = running)
  *   GPIO 23  OUTPUT — Heater indicator LED (mirrors relay, HIGH = heater ON)
@@ -47,7 +47,7 @@
 static const char *TAG = FIRMWARE_NAME;
 
 /* ── Pins ────────────────────────────────────────────────────────────────────── */
-#define PIN_WALLAS_RELAY   GPIO_NUM_16   /* HIGH = heater ON           */
+#define PIN_WALLAS_RELAY   GPIO_NUM_19   /* HIGH = heater ON           */
 #define PIN_STATUS_LED     GPIO_NUM_2    /* onboard LED                */
 #define PIN_WALLAS_FB      GPIO_NUM_18   /* HIGH = heater running      */
 #define PIN_HEATER_LED     GPIO_NUM_23   /* indicator LED, mirrors relay */

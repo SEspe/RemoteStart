@@ -28,7 +28,7 @@ extern volatile bool g_wifi_save_requested;
 extern char          g_new_ssid[64];
 extern char          g_new_pass[64];
 
-#define PIN_WALLAS_RELAY  16
+#define PIN_WALLAS_RELAY  19
 #define PIN_WALLAS_FB     18
 
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
@@ -163,7 +163,7 @@ static const char INDEX_HTML[] =
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
-"row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p16)',d.relay)+"
+"row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
 "row('Wallas Running FB (p18)',d.run);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
