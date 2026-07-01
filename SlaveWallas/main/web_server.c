@@ -30,6 +30,7 @@ extern char          g_new_pass[64];
 
 #define PIN_WALLAS_RELAY  19
 #define PIN_WALLAS_FB     18
+#define PIN_HEATER_LED    23
 
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
 static const char WIFI_SETUP_HTML[] =
@@ -166,7 +167,7 @@ static const char INDEX_HTML[] =
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
 "row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
-"row('Wallas Running FB (p18)',d.run);"
+"row('Wallas Running FB (p18)',d.run)+row('Heater Indicator LED (p23)',d.led);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
@@ -239,11 +240,12 @@ static esp_err_t h_root(httpd_req_t *req)
 static esp_err_t h_status(httpd_req_t *req)
 {
     g_wallas_running = gpio_get_level(PIN_WALLAS_FB);
-    char buf[128];
-    snprintf(buf, sizeof(buf), "{\"cmd\":%s,\"relay\":%s,\"run\":%s}",
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s}",
         g_start_cmd                         ? "true":"false",
         gpio_get_level(PIN_WALLAS_RELAY)    ? "true":"false",
-        g_wallas_running                    ? "true":"false");
+        g_wallas_running                    ? "true":"false",
+        gpio_get_level(PIN_HEATER_LED)      ? "true":"false");
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

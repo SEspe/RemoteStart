@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.11  
+**Version:** 1.12  
 **Author:** Stein Espe  
 **Date:** 2026-07-01  
 **Changelog:**
+- v1.12 — SlaveHonda gains a Debug GPIO tab, mirroring SlaveWallas's (same `GET /api/gpio/set`/`GET /api/gpio/status` design), adapted for the ESP32-classic pin map: manipulable subset is GPIO 4,13,14,16-19,21-23,25-27,32,33; reserved-and-status-only covers strapping (0,2,5,12,15), embedded flash (6-11), UART0 console (1,3), and input-only pins (34-39). Status dots cover the full GPIO 0-39 range. SlaveWallas's regular Status tab gains a lamp-style row for the GPIO23 heater indicator LED (was previously only visible via the Debug tab, not the normal status view).
 - v1.11 — SlaveWallas Debug GPIO tab now shows a live status dot (green = HIGH) for every GPIO 0-30, not just the manipulable subset, via a new read-only `GET /api/gpio/status`. Reserved pins (strapping, USB-JTAG) show status only, no ON/OFF buttons, since `gpio_get_level()` alone is passive (just reads the input register) and safe to call on any pin, unlike `h_gpio_set`'s active reconfiguration.
 - v1.10 — SlaveWallas: the onboard status LED (GPIO2) blink speed is now keyed off `g_start_cmd` (start commanded by Master) instead of `g_wallas_running` (the running-feedback sensor on GPIO18) — the feedback sensor isn't wired up on this unit yet, so blink speed previously couldn't reflect anything meaningful.
 - v1.9 — SlaveWallas: corrected heater relay pin, GPIO16 → GPIO19 (matches actual wiring, confirmed via the Debug GPIO tab added in v1.8). GPIO2 confirmed as the onboard status/heartbeat LED (blinks by design — slow when idle, fast when the heater is running; no change needed there).
@@ -352,11 +353,18 @@ Access at: `http://<Slave-IP>/`
 
 | Tab        | Content                                               | Refresh  | Units |
 |------------|--------------------------------------------------------|----------|-------|
-| Status     | Relay states, running feedback, last received command | 2 s auto | Both  |
-| Debug GPIO | Manual ON/OFF test of any non-reserved GPIO (hardware bring-up) | Manual | SlaveWallas only |
+| Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
+| Debug GPIO | Live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto (dots) | Both  |
 | OTA Update | File input + XHR upload to `/ota/upload`              | Manual   | Both  |
 
-HTTP endpoints: `/`, `/api/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload` on both units; SlaveWallas additionally has `GET /api/gpio/set?pin=N&level=0|1` (force a manipulable pin) and `GET /api/gpio/status` (read-only level of every GPIO 0-30, 2 s auto-refresh — every pin gets a status dot on the Debug GPIO tab, but only the non-reserved subset gets ON/OFF buttons).
+HTTP endpoints on both units: `/`, `/api/status`, `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
+
+`/api/gpio/set` forces a manipulable pin to OUTPUT and drives it (active, overrides normal operation). `/api/gpio/status` is read-only (`gpio_get_level()` on every GPIO, safe to call even on reserved pins since it never reconfigures anything) and backs the Debug tab's status dots — every pin gets a dot, only the non-reserved subset gets ON/OFF buttons. The non-reserved/manipulable set differs per chip:
+
+| Unit        | Chip         | Manipulable GPIOs                          | Reserved (status-only)                                    |
+|-------------|--------------|----------------------------------------------|--------------------------------------------------------------|
+| SlaveHonda  | ESP32        | 4,13,14,16,17,18,19,21,22,23,25,26,27,32,33  | Strapping (0,2,5,12,15), embedded flash (6-11), UART0 console (1,3), input-only (34-39) |
+| SlaveWallas | ESP32-C6     | 0,1,2,3,6,7,10,11,14,16-23                  | Strapping (4,5,8,9,15), USB-Serial/JTAG (12,13)              |
 
 > **SlaveHonda in ESP-NOW fallback (§3.2):** the unit has no IP address while WiFi-less, so its own web UI (and OTA) is unreachable in that state. Its status is only visible remotely via MasterHonda's Nodes tab (§6.1). To OTA-update SlaveHonda, it must be within WiFi range at boot (or reachable via the config portal) at least once.
 
