@@ -273,11 +273,19 @@ static esp_err_t h_root(httpd_req_t *req)
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif) { esp_netif_get_ip_info(netif, &info); snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip)); }
 
-    /* Simple template: replace %IP% */
-    char *html = strdup(INDEX_HTML_TMPL);
+    /* Build into a freshly-sized buffer rather than mutating a strdup() of
+     * the template in place -- the IP string is usually longer than the
+     * "%IP%" placeholder it replaces, so an in-place memmove overflows the
+     * strdup'd buffer (heap corruption -> crash on the next allocation). */
+    const char *tag = "%IP%";
+    const char *p = strstr(INDEX_HTML_TMPL, tag);
+    size_t before = p ? (size_t)(p - INDEX_HTML_TMPL) : strlen(INDEX_HTML_TMPL);
+    const char *after = p ? p + strlen(tag) : "";
+    char *html = malloc(before + strlen(ip) + strlen(after) + 1);
     if (!html) { httpd_resp_send_500(req); return ESP_OK; }
-    char *p = strstr(html, "%IP%");
-    if (p) { memmove(p + strlen(ip), p + 4, strlen(p + 4) + 1); memcpy(p, ip, strlen(ip)); }
+    memcpy(html, INDEX_HTML_TMPL, before);
+    strcpy(html + before, ip);
+    strcpy(html + before + strlen(ip), after);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req, html);
