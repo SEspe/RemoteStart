@@ -111,7 +111,7 @@ static const char INDEX_HTML[] =
 ".grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px}"
 ".row{display:flex;justify-content:space-between;align-items:center;"
 "background:#0f3460;border-radius:5px;padding:7px 12px;font-size:.83rem}"
-".led{width:12px;height:12px;border-radius:50%}"
+".led{display:inline-block;width:12px;height:12px;border-radius:50%;vertical-align:middle}"
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
 ".dim{color:#666}"
