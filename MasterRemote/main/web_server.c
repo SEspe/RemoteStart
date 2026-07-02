@@ -682,7 +682,10 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 14;
+    cfg.max_uri_handlers = 22;   /* headroom above the current route count -- an exact-fit cap
+                                    silently drops routes registered after the limit is hit, and
+                                    the registration loop below now logs if that happens (SlaveHonda
+                                    hit exactly this in v1.9.0: /ota/upload silently never registered) */
     cfg.stack_size       = 8192;
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
@@ -707,7 +710,8 @@ esp_err_t web_server_start(void)
         { .uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
-        httpd_register_uri_handler(server, &routes[i]);
+        if (httpd_register_uri_handler(server, &routes[i]) != ESP_OK)
+            ESP_LOGE(TAG, "Failed to register URI: %s", routes[i].uri);
 
     ESP_LOGI(TAG, "HTTP server started");
     return ESP_OK;
