@@ -239,8 +239,7 @@ static void timer_task(void *arg)
          * a plain clock tick is. Recompute it here too, or a schedule
          * boundary would silently never take effect (same class of bug as
          * the Honda force-send fix, §12). */
-        g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
-                               !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
+        g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
                                g_web_wallas_start || g_timer_wallas_start);
 
         uint32_t cur_heap = esp_get_free_heap_size();
@@ -552,10 +551,14 @@ static void IRAM_ATTR isr_honda_recompute(void *arg)
     g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
                          !gpio_get_level(PIN_HONDA_START) || g_web_honda_start);
 }
+/* PIN_WALLAS_START (GPIO4) reads inverted on this hardware revision (LOW =
+ * Victron demanding start) -- opposite of PIN_HONDA_START's polarity, and
+ * opposite of what earlier hardware used. PIN_WALLAS_MANUAL_START (GPIO5) is
+ * obsolete on this unit -- deliberately left unwired, floats unpredictably,
+ * and is NOT part of the command (see FSD §2.1/§12). */
 static void IRAM_ATTR isr_wallas_recompute(void *arg)
 {
-    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
-                          !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
+    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
                           g_web_wallas_start || g_timer_wallas_start);
 }
 
@@ -595,15 +598,16 @@ static void gpio_init(void)
      * expressions as the ISRs (web/timer sources are always false here) */
     g_honda_start_cmd  = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
                           !gpio_get_level(PIN_HONDA_START));
-    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
-                          !gpio_get_level(PIN_WALLAS_MANUAL_START));
+    g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_START);
 
-    /* Install ISR service and attach handlers */
+    /* Install ISR service and attach handlers. PIN_WALLAS_MANUAL_START gets
+     * no handler -- it's obsolete/unwired on this hardware and must not be
+     * able to trigger a recompute (see isr_wallas_recompute). Still
+     * configured as an input with pull-up above so it doesn't float wildly. */
     gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(PIN_HONDA_START,        isr_honda_recompute,  NULL);
     gpio_isr_handler_add(PIN_HONDA_MANUAL_START, isr_honda_recompute,  NULL);
     gpio_isr_handler_add(PIN_WALLAS_START,       isr_wallas_recompute, NULL);
-    gpio_isr_handler_add(PIN_WALLAS_MANUAL_START,isr_wallas_recompute, NULL);
 }
 
 /* ── Beacon Task ────────────────────────────────────────────────────────────── */

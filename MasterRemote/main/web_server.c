@@ -267,7 +267,7 @@ static const char INDEX_HTML_TMPL[] =
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
 "row('Honda Start (p15)',d.pHS)+row('Honda Manual (p14)',d.pHM)+"
-"row('Wallas Start (p4)',d.pWS)+row('Wallas Manual (p5)',d.pWM)+"
+"row('Wallas Start (p4)',d.pWS)+row('Wallas Manual (p5, unused)',d.pWM)+"
 "row('Honda FB LED (p13)',d.pFB);"
 "document.getElementById('state').innerHTML="
 "row('Honda Start CMD',d.gHS)+row('Honda Slave Running',d.gHR)+row('Wallas CMD',d.gWS);"
@@ -373,8 +373,8 @@ static esp_err_t h_status(httpd_req_t *req)
         "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"rssi\":%d,\"ch\":%d}",
         !gpio_get_level(PIN_HONDA_START)        ? "true" : "false",
          gpio_get_level(PIN_HONDA_MANUAL_START) ? "true" : "false",
-         gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",
-        !gpio_get_level(PIN_WALLAS_MANUAL_START)? "true" : "false",
+        !gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",   /* inverted on this hardware */
+        !gpio_get_level(PIN_WALLAS_MANUAL_START)? "true" : "false",   /* obsolete/unwired, display only -- not in command logic */
          gpio_get_level(PIN_HONDA_STARTED_FB)   ? "true" : "false",
         g_honda_start_cmd    ? "true" : "false",
         g_slave_honda_running? "true" : "false",
@@ -484,7 +484,9 @@ static esp_err_t h_wallas_start(httpd_req_t *req)
 static esp_err_t h_wallas_stop(httpd_req_t *req)
 {
     g_web_wallas_start = false;
-    g_wallas_start_cmd = gpio_get_level(PIN_WALLAS_START) || !gpio_get_level(PIN_WALLAS_MANUAL_START) || g_timer_wallas_start;
+    /* PIN_WALLAS_START reads inverted on this hardware; PIN_WALLAS_MANUAL_START
+     * is obsolete/unwired and deliberately excluded -- see main.c gpio_init(). */
+    g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_START) || g_timer_wallas_start;
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
