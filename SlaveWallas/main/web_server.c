@@ -144,6 +144,7 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Wallas Heater</h3><div class='grid' id='pins'>…</div></div>"
+"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
@@ -185,6 +186,8 @@ static const char INDEX_HTML[] =
 "document.getElementById('pins').innerHTML="
 "row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
 "row('Wallas Running FB (p18)',d.run)+row('Heater Indicator LED (p23)',d.led);"
+"document.getElementById('wifi').innerHTML="
+"txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('Channel',d.ch||'\\u2014');"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
@@ -258,13 +261,17 @@ static esp_err_t h_root(httpd_req_t *req)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
+    wifi_ap_record_t ap_info = {0};
+    esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not associated */
+
     g_wallas_running = gpio_get_level(PIN_WALLAS_FB);
-    char buf[160];
-    snprintf(buf, sizeof(buf), "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s}",
+    char buf[192];
+    snprintf(buf, sizeof(buf), "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s,\"rssi\":%d,\"ch\":%d}",
         g_start_cmd                         ? "true":"false",
         gpio_get_level(PIN_WALLAS_RELAY)    ? "true":"false",
         g_wallas_running                    ? "true":"false",
-        gpio_get_level(PIN_HEATER_LED)      ? "true":"false");
+        gpio_get_level(PIN_HEATER_LED)      ? "true":"false",
+        (int)ap_info.rssi, (int)ap_info.primary);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

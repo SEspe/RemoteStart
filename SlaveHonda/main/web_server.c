@@ -146,6 +146,7 @@ static const char INDEX_HTML[] =
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Honda Generator</h3><div class='grid' id='pins'>…</div></div>"
+"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
@@ -189,6 +190,8 @@ static const char INDEX_HTML[] =
 "row('Ignition ON (p14)',d.ign)+row('Starter active (p13)',d.sta)+"
 "row('Running FB (p15)',d.run)+row('Start CMD from Master',d.cmd)+"
 "row('Starting sequence',d.starting);"
+"document.getElementById('wifi').innerHTML="
+"txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('Channel',d.ch||'\\u2014');"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "var DBG_PINS=[4,13,14,16,17,18,19,21,22,23,25,26,27,32,33];"
@@ -262,14 +265,18 @@ static esp_err_t h_root(httpd_req_t *req)
 
 static esp_err_t h_status(httpd_req_t *req)
 {
-    char buf[192];
+    wifi_ap_record_t ap_info = {0};
+    esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not associated (e.g. ESP-NOW fallback) */
+
+    char buf[224];
     snprintf(buf, sizeof(buf),
-        "{\"ign\":%s,\"sta\":%s,\"run\":%s,\"cmd\":%s,\"starting\":%s}",
+        "{\"ign\":%s,\"sta\":%s,\"run\":%s,\"cmd\":%s,\"starting\":%s,\"rssi\":%d,\"ch\":%d}",
         !gpio_get_level(PIN_IGNITION_RELAY) ? "true":"false",
         !gpio_get_level(PIN_STARTER_RELAY)  ? "true":"false",
         g_honda_running  ? "true":"false",   /* not PIN_RUNNING_FB directly -- see main.c, unwired on this hardware */
         g_start_cmd      ? "true":"false",
-        g_honda_starting ? "true":"false");
+        g_honda_starting ? "true":"false",
+        (int)ap_info.rssi, (int)ap_info.primary);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
