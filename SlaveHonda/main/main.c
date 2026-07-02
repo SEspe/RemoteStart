@@ -259,11 +259,14 @@ static void honda_start(void) {
         return;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
-    g_honda_running  = false;   /* PIN_RUNNING_FB not wired -- see its #define above.
-                                  * Deliberately not "true": Master only resends a start
-                                  * when g_honda_start_cmd != g_slave_honda_running, so a
-                                  * false-positive "running" here would silently suppress
-                                  * a real start command from ever being sent. */
+    /* PIN_RUNNING_FB not wired (see its #define above), so this can't be measured --
+     * assume the sequence succeeded. This is the safer of two unreliable defaults:
+     * a false positive here just prevents an automatic retry of a failed start
+     * (recoverable with a manual Stop+Start), whereas reporting false would make
+     * MasterRemote think the start never took and keep resending it forever,
+     * re-cranking the starter on an already-running engine every
+     * HONDA_RESTART_BLOCK_MS (confirmed live 2026-07-02). */
+    g_honda_running  = true;
     g_honda_starting = false;
     ESP_LOGI(TAG, "Running: %d", g_honda_running);
 }
@@ -287,7 +290,13 @@ static void espnow_add_peer(const uint8_t *mac) {
 
 static void send_status(void) {
     if (!s_master_known) return;   /* Master not discovered yet — nothing to send to */
-    g_honda_running = false;   /* PIN_RUNNING_FB not wired -- see its #define above */
+    /* Do NOT touch g_honda_running here -- it's owned by honda_start()/honda_stop()
+     * now that PIN_RUNNING_FB is unwired (see its #define above). This function used
+     * to force it false on every 10 s heartbeat, which stomped a just-completed
+     * successful start back to "not running" -- MasterRemote only stops resending a
+     * start command once it sees a running match, so that false report caused it to
+     * resend every HONDA_RESTART_BLOCK_MS forever, re-cranking the starter on an
+     * already-running engine each time. Confirmed live 2026-07-02. */
     slave_msg_t msg = {0};
     strlcpy(msg.label, "SlaveHonda->Master", sizeof(msg.label));
     msg.HondaIgnitionOn = g_honda_ign_on;
