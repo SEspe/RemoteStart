@@ -14,3 +14,7 @@ build/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# ESP-IDF generated files (regenerated from sdkconfig.defaults / idf_component.yml)
+sdkconfig
+dependencies.lock
