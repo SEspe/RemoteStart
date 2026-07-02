@@ -718,6 +718,13 @@ esp_err_t web_server_start(void)
                                     the registration loop below now logs if that happens (SlaveHonda
                                     hit exactly this in v1.9.0: /ota/upload silently never registered) */
     cfg.stack_size       = 8192;
+    cfg.lru_purge_enable = true;   /* evict the least-recently-used session when all
+                                      socket slots (default 7) are taken -- without this,
+                                      abandoned keep-alive/timed-out client connections
+                                      permanently exhaust the pool and the server accepts
+                                      TCP but never services HTTP again until a reboot
+                                      (root-caused live on 2026-07-02: ping OK, TCP
+                                      handshake OK, HTTP dead -- FSD v1.35) */
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");

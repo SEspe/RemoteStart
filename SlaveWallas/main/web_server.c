@@ -479,6 +479,9 @@ esp_err_t web_server_start(void)
                                   the registration loop below now logs if that happens (SlaveHonda
                                   hit exactly this in v1.9.0: /ota/upload silently never registered) */
     cfg.stack_size=6144;
+    cfg.lru_purge_enable=true;   /* evict LRU session when the socket pool (default 7)
+                                    is full -- abandoned client connections otherwise
+                                    exhaust it and wedge HTTP until reboot (FSD v1.35) */
     if (httpd_start(&server,&cfg) != ESP_OK) { ESP_LOGE(TAG,"Start failed"); return ESP_FAIL; }
     static const httpd_uri_t routes[]={
         {.uri="/",                .method=HTTP_GET,  .handler=h_root        },
