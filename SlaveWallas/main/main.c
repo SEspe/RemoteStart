@@ -178,6 +178,14 @@ static void wifi_init_and_connect(void) {
         strlcpy((char*)sta.sta.password, pass, sizeof(sta.sta.password));
         esp_wifi_set_config(WIFI_IF_STA, &sta);
         esp_wifi_start();
+        /* Default modem-sleep power save adds real latency to HTTP over WiFi
+         * (radio sleeps between beacons, only wakes at DTIM intervals) -- mains/
+         * battery-bank powered, no downside to disabling it. See MasterRemote's
+         * main.c for the fuller comment (2026-07-02 flaky-web-server fix). */
+        esp_wifi_set_ps(WIFI_PS_NONE);
+        /* Max TX power (84 = 21 dBm) -- not fatal if the module rejects it. */
+        esp_err_t txp_err = esp_wifi_set_max_tx_power(84);
+        if (txp_err != ESP_OK) ESP_LOGW(TAG, "set_max_tx_power failed: %s", esp_err_to_name(txp_err));
         EventBits_t b = xEventGroupWaitBits(s_wifi_eg,
             WIFI_CONNECTED_BIT|WIFI_FAIL_BIT, pdFALSE, pdFALSE, pdMS_TO_TICKS(15000));
         if (b & WIFI_CONNECTED_BIT) { web_server_start(); return; }

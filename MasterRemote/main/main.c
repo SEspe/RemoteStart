@@ -396,6 +396,18 @@ static void wifi_init_and_connect(void)
         strlcpy((char *)sta_cfg.sta.password, pass, sizeof(sta_cfg.sta.password));
         ESP_ERROR_CHECK(esp_wifi_set_config(WIFI_IF_STA, &sta_cfg));
         ESP_ERROR_CHECK(esp_wifi_start());
+        /* Default modem-sleep power save (WIFI_PS_MIN_MODEM) makes the radio sleep
+         * between beacons and only wake at DTIM intervals to receive buffered
+         * packets -- adds real latency to every HTTP request/response, compounding
+         * with a marginal RSSI into the flaky web-server symptom seen 2026-07-02.
+         * These units are mains/battery-bank powered, not power-constrained, so
+         * there's no downside to disabling it. */
+        ESP_ERROR_CHECK(esp_wifi_set_ps(WIFI_PS_NONE));
+        /* Max TX power (84 = 21 dBm, the top of the 0.25 dBm-unit range) -- not
+         * ESP_ERROR_CHECK'd since the actual ceiling is module/chip-dependent and
+         * a rejected value here shouldn't be fatal, just leaves the IDF default. */
+        esp_err_t txp_err = esp_wifi_set_max_tx_power(84);
+        if (txp_err != ESP_OK) ESP_LOGW(TAG, "set_max_tx_power failed: %s", esp_err_to_name(txp_err));
 
         EventBits_t bits = xEventGroupWaitBits(s_wifi_eg,
             WIFI_CONNECTED_BIT | WIFI_FAIL_BIT, pdFALSE, pdFALSE,
