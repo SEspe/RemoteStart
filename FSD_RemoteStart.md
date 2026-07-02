@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.24  
+**Version:** 1.25  
 **Author:** SEspe  
-**Date:** 2026-07-01  
+**Date:** 2026-07-02  
 **Changelog:**
+- v1.25 — Fixed a severe bug where all three units' web servers (and IP-based access generally) would permanently die after an extended runtime following any transient WiFi hiccup (router reboot, brief outage, interference). `wifi_event_handler`'s `WIFI_EVENT_STA_DISCONNECTED` case capped reconnect attempts at `MAX_RETRY` (5) and then gave up forever, setting a `WIFI_FAIL_BIT` nobody was listening for post-boot — that event group wait only happens once, during the initial `wifi_init_and_connect()` boot sequence. Once exhausted, no code path ever called `esp_wifi_connect()` again, so the STA stayed permanently disconnected until a manual power cycle. ESP-NOW kept working throughout (it operates at the radio layer, independent of STA/AP association), which is why heartbeats and commands stayed up even as the web UI became unreachable and the Nodes tab showed a slave with no IP (`get_ip_str()`/the heartbeat's `ip` field both go empty once the netif has no address). Reported after MasterRemote needed a manual power cycle to recover; SlaveHonda and SlaveWallas were unreachable at the same time, consistent with one shared WiFi outage tripping the same latent bug on all three. Fixed by latching whether the STA has ever connected since boot (`s_wifi_ever_connected`, set on the first `IP_EVENT_STA_GOT_IP`): once true, `WIFI_EVENT_STA_DISCONNECTED` retries indefinitely instead of giving up after 5 tries — the retry cap now only governs the initial boot decision to fall back to the config portal, never a later in-service disconnect. Identical fix applied to MasterRemote (1.5.3), SlaveHonda (1.3.2), SlaveWallas (1.5.3); no data-model or wire-format change. Also added a **System** resource monitor (free heap, heap low-water mark, uptime, WiFi reconnect count) to each unit's own web UI, so a slow resource leak can be caught before it causes an outage like this one — the low-water mark (`esp_get_minimum_free_heap_size()`) is the reliable leak signal, since it survives momentary recoveries that a plain "current free heap" reading would hide. New `GET /api/sysinfo` endpoint on all three units; surfaced in SlaveHonda's/SlaveWallas's Debug GPIO tab and MasterRemote's Pin Status tab (Master has no Debug GPIO tab). A new `g_wifi_disconnect_count` counter (never reset) tracks total STA disconnects since boot, useful for judging how flaky a given unit's WiFi link actually is.
 - v1.24 — Fixed the Debug GPIO tab's live-level dot (v1.23) being genuinely invisible, not just hard to see: the dot is a `<span class="led">`, but `.led`'s CSS only set `width`/`height`/`border-radius` — properties a `<span>` (inline by default) silently ignores. Added `display:inline-block` (plus `vertical-align:middle`) to `.led` so the dot actually renders wherever it's used, span or div. This was a pre-existing bug, not introduced by v1.23's reorder — it just made the missing dot more noticeable once it was no longer buried in front of bold text. SlaveHonda has the identical Debug GPIO tab code and the same bug, so it received the same two fixes (CSS + "GPIOnn : ●" reorder) for parity. SlaveWallas v1.5.2, SlaveHonda v1.3.1; no data-model or API change.
 - v1.23 — Debug GPIO tab (SlaveWallas): each pin row's live-level dot was easy to miss, sitting inline in front of the bold, centered "GPIOnn" label. Reformatted to "GPIOnn : ●" (label first, dot trailing after the colon) so the indicator reads clearly; the ON/OFF control buttons remain on their own line below, unchanged. SlaveWallas-only, web UI change (v1.5.1), no data-model or API change.
 - v1.22 — Weekly Timer tab UX: editing a day's enabled/start/stop no longer saves per-field on every change. All 7 rows now stage locally and a single **Set** button (disabled until something is edited) commits all changed rows at once with one click, then re-disables. Avoids a stray keystroke or checkbox click silently firing a save mid-edit. MasterRemote-only, web UI change (v1.5.2), no data-model or API change.
@@ -337,7 +338,7 @@ Access at: `http://<MasterRemote-IP>/`
 
 | Tab          | Content                                                      | Refresh  |
 |--------------|--------------------------------------------------------------|----------|
-| Pin Status   | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
+| Pin Status   | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
 | OTA Update   | File input + XHR upload to `/ota/upload`                     | Manual   |
@@ -364,6 +365,7 @@ HTTP endpoints:
 |--------|---------------------|-----------------------------------------|
 | GET    | `/`                 | Main dashboard HTML                    |
 | GET    | `/api/status`       | JSON: pin levels, global state, WiFi RSSI/channel |
+| GET    | `/api/sysinfo`      | JSON: free heap, heap low-water mark, uptime, WiFi reconnect count (v1.25, §10) |
 | GET    | `/api/nodes`        | JSON: roster (role, fw, mac, ip, has_wifi, rssi, channel, connected, last_seen, running status) |
 | POST   | `/api/honda/start`  | Manual override: force Honda start cmd |
 | POST   | `/api/honda/stop`   | Clear override; recompute from GPIO    |
@@ -383,10 +385,10 @@ Access at: `http://<Slave-IP>/`
 | Tab        | Content                                               | Refresh  | Units |
 |------------|--------------------------------------------------------|----------|-------|
 | Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
-| Debug GPIO | Live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto (dots) | Both  |
+| Debug GPIO | System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
 | OTA Update | File input + XHR upload to `/ota/upload`              | Manual   | Both  |
 
-HTTP endpoints on both units: `/`, `/api/status`, `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
+HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
 
 `/api/gpio/set` forces a manipulable pin to OUTPUT and drives it (active, overrides normal operation). `/api/gpio/status` is read-only (`gpio_get_level()` on every GPIO, safe to call even on reserved pins since it never reconfigures anything) and backs the Debug tab's status dots — every pin gets a dot, only the non-reserved subset gets ON/OFF buttons. The non-reserved/manipulable set differs per chip:
 
@@ -555,6 +557,7 @@ app_main()
 | No NVS credentials on boot (any unit)              | SoftAP portal opened; restarts after credentials saved   |
 | WiFi connect timeout (15 s) — MasterRemote/SlaveWallas | Portal opened (WiFi is mandatory for these units)     |
 | WiFi connect timeout (15 s) — SlaveHonda, creds exist | No portal; falls back to ESP-NOW channel scan (§3.2/§9.2) |
+| WiFi disconnects *after* a successful boot connection (any unit) | `esp_wifi_connect()` retried indefinitely on every disconnect (v1.25) — previously gave up permanently after 5 tries, killing the web server until a power cycle while ESP-NOW kept working (§12) |
 | SlaveHonda: no MasterRemote beacon found            | Channel scan repeats indefinitely (§3.4); unit has no IP/web UI meanwhile |
 | ESP-NOW init failure                               | `esp_restart()`                                          |
 | Peer add failure                                   | `ESP_LOGE` log, execution continues                       |
@@ -609,3 +612,5 @@ Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). 
 - `gpio_get_level()` on a pin configured `GPIO_MODE_OUTPUT` (output only, input not enabled) does not reliably read back the pin's actual driven state on ESP-IDF — this affects any status-API field that re-reads an output pin instead of tracking its own commanded state (e.g. SlaveWallas's `relay` field in `/api/status`, MasterRemote's `pFB`). Do not treat these fields as proof of true physical pin state; the GPIO23 heater indicator LED (§2.4) exists specifically to give SlaveWallas's relay a trustworthy hardware-level readout that doesn't depend on this.
 - The weekly Wallas timer (§6.1a) depends on MasterRemote having WiFi/internet reachability for its initial and ongoing NTP sync (`pool.ntp.org`) — since MasterRemote's WiFi is already mandatory (§2.1), this doesn't add a new failure mode, but it's worth noting the timer stays fully inactive (never triggers) until the first successful sync after boot, and there's no local RTC/battery backup to bridge a sync gap after a power cycle. If the router blocks outbound NTP (uncommon but possible on a locked-down network), the timer will never activate at all.
 - A manual **Stop Wallas** press during an active timer window doesn't durably override the timer — it clears the web override, but the timer's own OR'd-in contribution is still true, so it wins back within one `timer_task` tick (≤20 s). See §6.1a.
+- The System resource monitor (§10, v1.25) is local per-unit only — MasterRemote's Pin Status tab shows only Master's own heap/uptime, not SlaveHonda's or SlaveWallas's. Check each slave's own web UI directly (when it has an IP) for its resource stats; there is no central aggregation.
+- Before v1.25, any unit's web server could die permanently after a mid-run WiFi disconnect and require a manual power cycle to recover, even though ESP-NOW kept working the whole time (radio-layer, independent of STA/AP association) — see the v1.25 changelog entry and §10 for the root cause and fix. If a unit's web UI is unreachable but its Nodes-tab/ESP-NOW status still looks healthy on firmware older than 1.5.3/1.3.2/1.5.3, this is the likely cause; update to at least those versions.

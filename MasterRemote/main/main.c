@@ -265,6 +265,8 @@ slave_info_t g_slave_wallas = {0};
 #define WIFI_FAIL_BIT       BIT1
 static EventGroupHandle_t  s_wifi_eg;
 static int                 s_retry_count = 0;
+static bool                s_wifi_ever_connected = false;
+volatile uint32_t          g_wifi_disconnect_count = 0;
 #define MAX_RETRY 5
 
 /* ── NVS helpers ────────────────────────────────────────────────────────────── */
@@ -300,7 +302,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         if (id == WIFI_EVENT_STA_START) {
             esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
-            if (s_retry_count < MAX_RETRY) {
+            g_wifi_disconnect_count++;
+            /* Once we've connected at least once, retry forever — MAX_RETRY only
+             * governs the initial boot decision to fall back to the config portal. */
+            if (s_wifi_ever_connected || s_retry_count < MAX_RETRY) {
                 esp_wifi_connect();
                 s_retry_count++;
                 ESP_LOGI(TAG, "WiFi retry %d/%d", s_retry_count, MAX_RETRY);
@@ -312,6 +317,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
         ip_event_got_ip_t *ev = (ip_event_got_ip_t *)data;
         ESP_LOGI(TAG, "IP: " IPSTR, IP2STR(&ev->ip_info.ip));
         s_retry_count = 0;
+        s_wifi_ever_connected = true;
         xEventGroupSetBits(s_wifi_eg, WIFI_CONNECTED_BIT);
     }
 }

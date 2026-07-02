@@ -15,6 +15,8 @@
 #include "esp_ota_ops.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
+#include "esp_system.h"
+#include "esp_timer.h"
 #include "driver/gpio.h"
 
 #include "version.h"
@@ -22,11 +24,12 @@
 
 static const char *TAG = "web";
 
-extern volatile bool g_start_cmd;
-extern          bool g_wallas_running;
-extern volatile bool g_wifi_save_requested;
-extern char          g_new_ssid[64];
-extern char          g_new_pass[64];
+extern volatile bool     g_start_cmd;
+extern          bool     g_wallas_running;
+extern volatile bool     g_wifi_save_requested;
+extern char              g_new_ssid[64];
+extern char              g_new_pass[64];
+extern volatile uint32_t g_wifi_disconnect_count;
 
 #define PIN_WALLAS_RELAY  19
 #define PIN_WALLAS_FB     18
@@ -141,6 +144,7 @@ static const char INDEX_HTML[] =
 "<div class='card'><h3>Wallas Heater</h3><div class='grid' id='pins'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
+"<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
 "<div class='card'><h3>Manual GPIO Test</h3>"
 "<p class='warn'>Hardware bring-up only. Every GPIO's live level is shown as a "
 "dot (green = HIGH). Pins with ON/OFF buttons can be forced to OUTPUT and "
@@ -163,6 +167,16 @@ static const char INDEX_HTML[] =
 "document.getElementById(id).classList.add('on');btn.classList.add('on');}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
+"function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
+"function fmtKB(n){return Math.round(n/1024)+' KB';}"
+"function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
+"return (d?d+'d ':'')+(h||d?h+'h ':'')+m+'m';}"
+"function fetchSys(){"
+"fetch('/api/sysinfo').then(r=>r.json()).then(d=>{"
+"document.getElementById('sys').innerHTML="
+"txtRow('Free Heap',fmtKB(d.heap))+txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin))+"
+"txtRow('Uptime',fmtUptime(d.uptime))+txtRow('WiFi Reconnects',d.wifiDisc);"
+"}).catch(()=>{});}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
@@ -202,11 +216,12 @@ static const char INDEX_HTML[] =
 "xhr.send(f);}"
 "setInterval(()=>{"
 "if(document.getElementById('status').classList.contains('on'))fetchStatus();"
-"if(document.getElementById('debug').classList.contains('on'))fetchDbg();"
+"if(document.getElementById('debug').classList.contains('on')){fetchDbg();fetchSys();}"
 "},2000);"
 "fetchStatus();"
 "buildDbg();"
 "fetchDbg();"
+"fetchSys();"
 "</script></body></html>";
 
 /* ── Handlers ────────────────────────────────────────────────────────────────── */
@@ -246,6 +261,22 @@ static esp_err_t h_status(httpd_req_t *req)
         gpio_get_level(PIN_WALLAS_RELAY)    ? "true":"false",
         g_wallas_running                    ? "true":"false",
         gpio_get_level(PIN_HEATER_LED)      ? "true":"false");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* GET /api/sysinfo  ── self-monitoring: heap + low-water mark + uptime + WiFi
+ * reconnect count, for spotting a slow resource leak before it kills the
+ * web server (a steadily falling heap low-water mark is the tell). */
+static esp_err_t h_sysinfo(httpd_req_t *req)
+{
+    char buf[128];
+    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"uptime\":%lld,\"wifiDisc\":%lu}",
+        (unsigned long)esp_get_free_heap_size(),
+        (unsigned long)esp_get_minimum_free_heap_size(),
+        (long long)(esp_timer_get_time() / 1000000),
+        (unsigned long)g_wifi_disconnect_count);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -408,6 +439,7 @@ esp_err_t web_server_start(void)
     static const httpd_uri_t routes[]={
         {.uri="/",                .method=HTTP_GET,  .handler=h_root        },
         {.uri="/api/status",      .method=HTTP_GET,  .handler=h_status      },
+        {.uri="/api/sysinfo",     .method=HTTP_GET,  .handler=h_sysinfo     },
         {.uri="/api/gpio/set",    .method=HTTP_GET,  .handler=h_gpio_set    },
         {.uri="/api/gpio/status", .method=HTTP_GET,  .handler=h_gpio_status },
         {.uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },

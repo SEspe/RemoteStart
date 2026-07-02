@@ -87,11 +87,12 @@ typedef struct {
 } slave_msg_t;
 
 /* ── Global State ────────────────────────────────────────────────────────────── */
-volatile bool g_start_cmd    = false;
-         bool g_honda_running = false;
-         bool g_honda_starting= false;
-         bool g_honda_ign_on  = false;
-         bool g_has_wifi      = false;
+volatile bool     g_start_cmd    = false;
+         bool     g_honda_running = false;
+         bool     g_honda_starting= false;
+         bool     g_honda_ign_on  = false;
+         bool     g_has_wifi      = false;
+volatile uint32_t g_wifi_disconnect_count = 0;
 
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
@@ -106,6 +107,7 @@ static int64_t s_master_last_seen_us = 0;
 #define WIFI_FAIL_BIT      BIT1
 static EventGroupHandle_t s_wifi_eg;
 static int s_retry = 0;
+static bool s_wifi_ever_connected = false;
 #define MAX_RETRY 5
 
 static esp_err_t nvs_load_wifi(char *ssid, char *pass, size_t len) {
@@ -134,11 +136,15 @@ static void wifi_event_handler(void *a, esp_event_base_t base, int32_t id, void 
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_START && !g_portal_mode) esp_wifi_connect();
         else if (id == WIFI_EVENT_STA_DISCONNECTED) {
-            if (s_retry++ < MAX_RETRY) esp_wifi_connect();
+            g_wifi_disconnect_count++;
+            /* Once we've connected at least once, retry forever — MAX_RETRY only
+             * governs the initial boot decision to fall back to the config portal. */
+            if (s_wifi_ever_connected || s_retry++ < MAX_RETRY) esp_wifi_connect();
             else xEventGroupSetBits(s_wifi_eg, WIFI_FAIL_BIT);
         }
     } else if (base == IP_EVENT && id == IP_EVENT_STA_GOT_IP) {
         s_retry = 0;
+        s_wifi_ever_connected = true;
         xEventGroupSetBits(s_wifi_eg, WIFI_CONNECTED_BIT);
         ESP_LOGI(TAG, "IP acquired");
     }

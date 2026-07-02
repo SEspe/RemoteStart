@@ -7,7 +7,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 | Unit         | MCU      | Purpose                                   | Web UI tabs |
 |--------------|----------|--------------------------------------------|-------------|
 | MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Nodes, Weekly Timer, OTA Update |
-| SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, OTA Update |
+| SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, Debug GPIO, OTA Update |
 | SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug GPIO, OTA Update |
 
 ## Framework
@@ -24,6 +24,8 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a fourth Wallas start source alongside the relay, manual button, and web override (see FSD §6.1a)
 - **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash
 - **Individual versioning** — each unit has its own `FIRMWARE_VERSION` in `main/version.h`
+- **Resilient WiFi reconnection** — once a unit has connected once since boot, it retries indefinitely on any later disconnect instead of giving up after a few tries (fixed in v1.25 after a shared WiFi hiccup killed all three units' web servers until a manual power cycle; see FSD §10/§12)
+- **System resource monitor** — free heap, heap low-water mark, uptime, and WiFi reconnect count on every unit's own web UI (`/api/sysinfo`), for catching a slow resource leak before it causes an outage (see FSD §10)
 
 ## First Startup
 
