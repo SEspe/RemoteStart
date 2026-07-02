@@ -24,6 +24,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -82,6 +83,8 @@ typedef struct {
 volatile bool     g_start_cmd     = false;
          bool     g_wallas_running = false;
 volatile uint32_t g_wifi_disconnect_count = 0;
+         uint32_t g_heap_min       = UINT32_MAX;   /* self-sampled low-water mark, paired with a timestamp (esp_get_minimum_free_heap_size() has no "when") */
+         int64_t  g_heap_min_ts_us = 0;
 
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
@@ -314,6 +317,8 @@ static void status_task(void *arg) {
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(STATUS_SEND_MS));
         send_status();
+        uint32_t cur_heap = esp_get_free_heap_size();
+        if (cur_heap < g_heap_min) { g_heap_min = cur_heap; g_heap_min_ts_us = esp_timer_get_time(); }
     }
 }
 

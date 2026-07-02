@@ -33,6 +33,8 @@ extern volatile bool     g_wifi_save_requested;
 extern char              g_new_ssid[64];
 extern char              g_new_pass[64];
 extern volatile uint32_t g_wifi_disconnect_count;
+extern          uint32_t g_heap_min;
+extern          int64_t  g_heap_min_ts_us;
 
 #define PIN_STARTER_RELAY   13
 #define PIN_IGNITION_RELAY  14
@@ -124,7 +126,7 @@ static const char INDEX_HTML[] =
 ".warn{font-size:.78rem;color:#e9b400;margin-bottom:10px}"
 ".dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}"
 ".dbg .row{flex-direction:column;align-items:stretch;gap:4px}"
-".dbg .row>span:first-child{text-align:center;font-weight:bold}"
+".dbg .row>span:first-child{display:inline-flex;align-items:center;justify-content:center;gap:4px;font-weight:bold}"
 ".btns{display:flex;gap:4px}"
 "button.go{flex:1;padding:6px;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:.78rem}"
 "button.go-on{background:#4caf50}button.go-off{background:#555}"
@@ -178,7 +180,8 @@ static const char INDEX_HTML[] =
 "function fetchSys(){"
 "fetch('/api/sysinfo').then(r=>r.json()).then(d=>{"
 "document.getElementById('sys').innerHTML="
-"txtRow('Free Heap',fmtKB(d.heap))+txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin))+"
+"txtRow('Free Heap',fmtKB(d.heap))+"
+"txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin)+' \\u2014 '+fmtUptime(d.heapMinAgo)+' ago')+"
 "txtRow('Uptime',fmtUptime(d.uptime))+txtRow('WiFi Reconnects',d.wifiDisc);"
 "}).catch(()=>{});}"
 "function fetchStatus(){"
@@ -277,10 +280,11 @@ static esp_err_t h_status(httpd_req_t *req)
  * web server (a steadily falling heap low-water mark is the tell). */
 static esp_err_t h_sysinfo(httpd_req_t *req)
 {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"uptime\":%lld,\"wifiDisc\":%lu}",
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,\"wifiDisc\":%lu}",
         (unsigned long)esp_get_free_heap_size(),
-        (unsigned long)esp_get_minimum_free_heap_size(),
+        (unsigned long)g_heap_min,
+        (long long)((esp_timer_get_time() - g_heap_min_ts_us) / 1000000),
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned long)g_wifi_disconnect_count);
     httpd_resp_set_type(req, "application/json");

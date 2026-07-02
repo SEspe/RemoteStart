@@ -19,6 +19,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
+#include <stdint.h>
 #include <time.h>
 
 #include "freertos/FreeRTOS.h"
@@ -114,6 +115,12 @@ volatile bool g_web_wallas_start = false;
  * flag forces one send regardless, bypassing both the mismatch check and
  * the restart-block cooldown, then clears itself. */
 volatile bool g_honda_force_send = false;
+
+/* Self-sampled heap low-water mark, paired with a timestamp -- esp_get_minimum_free_heap_size()
+ * tracks the exact minimum but has no "when", so this is sampled alongside it in timer_task's
+ * 20 s tick to keep the reported value and its age self-consistent. */
+uint32_t g_heap_min       = UINT32_MAX;
+int64_t  g_heap_min_ts_us = 0;
 
 /* ── NTP Clock & Weekly Wallas Timer ────────────────────────────────────────── */
 /* Fourth Wallas command source, OR'd in alongside the Victron relay, physical
@@ -235,6 +242,9 @@ static void timer_task(void *arg)
         g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
                                !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
                                g_web_wallas_start || g_timer_wallas_start);
+
+        uint32_t cur_heap = esp_get_free_heap_size();
+        if (cur_heap < g_heap_min) { g_heap_min = cur_heap; g_heap_min_ts_us = esp_timer_get_time(); }
 
         vTaskDelay(pdMS_TO_TICKS(20000));
     }

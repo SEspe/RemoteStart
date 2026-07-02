@@ -63,6 +63,8 @@ extern volatile bool     g_wifi_save_requested;
 extern char              g_new_ssid[64];
 extern char              g_new_pass[64];
 extern volatile uint32_t g_wifi_disconnect_count;
+extern          uint32_t g_heap_min;
+extern          int64_t  g_heap_min_ts_us;
 
 /* Pin numbers (mirror main.c) */
 #define PIN_HONDA_STARTED_FB     13
@@ -227,7 +229,8 @@ static const char INDEX_HTML_TMPL[] =
 "function fetchSys(){"
 "fetch('/api/sysinfo').then(r=>r.json()).then(d=>{"
 "document.getElementById('sys').innerHTML="
-"txtRow('Free Heap',fmtKB(d.heap))+txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin))+"
+"txtRow('Free Heap',fmtKB(d.heap))+"
+"txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin)+' \\u2014 '+fmtUptime(d.heapMinAgo)+' ago')+"
 "txtRow('Uptime',fmtUptime(d.uptime))+txtRow('WiFi Reconnects',d.wifiDisc);"
 "}).catch(()=>{});}"
 "function cmd(unit,action){"
@@ -386,10 +389,11 @@ static esp_err_t h_status(httpd_req_t *req)
  * web server (a steadily falling heap low-water mark is the tell). */
 static esp_err_t h_sysinfo(httpd_req_t *req)
 {
-    char buf[128];
-    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"uptime\":%lld,\"wifiDisc\":%lu}",
+    char buf[160];
+    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,\"wifiDisc\":%lu}",
         (unsigned long)esp_get_free_heap_size(),
-        (unsigned long)esp_get_minimum_free_heap_size(),
+        (unsigned long)g_heap_min,
+        (long long)((esp_timer_get_time() - g_heap_min_ts_us) / 1000000),
         (long long)(esp_timer_get_time() / 1000000),
         (unsigned long)g_wifi_disconnect_count);
     httpd_resp_set_type(req, "application/json");
