@@ -314,6 +314,10 @@ static void gpio_init_pins(void) {
 
 /* ── Tasks ───────────────────────────────────────────────────────────────────── */
 static void status_task(void *arg) {
+    /* Baseline immediately so /api/sysinfo never reports the UINT32_MAX
+     * sentinel during the first sampling interval after boot. */
+    g_heap_min       = esp_get_free_heap_size();
+    g_heap_min_ts_us = esp_timer_get_time();
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(STATUS_SEND_MS));
         send_status();

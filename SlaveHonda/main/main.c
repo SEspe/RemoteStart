@@ -216,32 +216,54 @@ static void get_ip_str(char *buf, size_t sz) {
 }
 
 /* ── Honda State Machine ─────────────────────────────────────────────────────── */
+static void honda_stop(void) {
+    ESP_LOGI(TAG, "Stop");
+    gpio_set_level(PIN_IGNITION_RELAY, 1);
+    gpio_set_level(PIN_STARTER_RELAY,  1);
+    gpio_set_level(PIN_LED_EXT,        0);
+    g_honda_running = false;
+    g_honda_ign_on  = false;
+    /* g_honda_starting is deliberately NOT cleared here -- it is owned by the
+     * start-sequence task, which clears it itself on every exit path. Clearing
+     * it from a stop command mid-sequence would let a new start command spawn
+     * a second sequence task while the first is still driving the relays. */
+}
+
+/* Blocking start sequence. The spawner must set g_honda_starting before
+ * creating the task (claiming the sequence); every exit path here clears it.
+ * The delays poll g_start_cmd so a stop command aborts the sequence promptly
+ * instead of cranking a generator that was just told to stop. */
 static void honda_start(void) {
-    if (g_honda_starting || g_honda_running) return;
-    g_honda_starting = true;
-    g_honda_ign_on   = true;
+    g_honda_ign_on = true;
     ESP_LOGI(TAG, "Ignition ON");
     gpio_set_level(PIN_IGNITION_RELAY, 0);   /* active LOW */
     gpio_set_level(PIN_LED_EXT,        1);
-    vTaskDelay(pdMS_TO_TICKS(HONDA_IGN_WARMUP_MS));
-    ESP_LOGI(TAG, "Cranking...");
-    gpio_set_level(PIN_STARTER_RELAY, 0);
-    vTaskDelay(pdMS_TO_TICKS(HONDA_CRANK_MS));
-    gpio_set_level(PIN_STARTER_RELAY, 1);
+    for (int t = 0; t < HONDA_IGN_WARMUP_MS && g_start_cmd; t += 100)
+        vTaskDelay(pdMS_TO_TICKS(100));
+    if (g_start_cmd) {
+        ESP_LOGI(TAG, "Cranking...");
+        gpio_set_level(PIN_STARTER_RELAY, 0);
+        for (int t = 0; t < HONDA_CRANK_MS && g_start_cmd; t += 100)
+            vTaskDelay(pdMS_TO_TICKS(100));
+        gpio_set_level(PIN_STARTER_RELAY, 1);
+    }
+    if (!g_start_cmd) {
+        ESP_LOGW(TAG, "Start sequence aborted by stop command");
+        honda_stop();
+        g_honda_starting = false;
+        return;
+    }
     vTaskDelay(pdMS_TO_TICKS(1000));
     g_honda_running  = !gpio_get_level(PIN_RUNNING_FB);
     g_honda_starting = false;
     ESP_LOGI(TAG, "Running: %d", g_honda_running);
 }
 
-static void honda_stop(void) {
-    ESP_LOGI(TAG, "Stop");
-    gpio_set_level(PIN_IGNITION_RELAY, 1);
-    gpio_set_level(PIN_STARTER_RELAY,  1);
-    gpio_set_level(PIN_LED_EXT,        0);
-    g_honda_running  = false;
-    g_honda_starting = false;
-    g_honda_ign_on   = false;
+/* A FreeRTOS task function must never return -- returning aborts the whole
+ * system. This wrapper runs the sequence and then deletes itself. */
+static void honda_start_task(void *arg) {
+    honda_start();
+    vTaskDelete(NULL);
 }
 
 /* ── ESP-NOW ─────────────────────────────────────────────────────────────────── */
@@ -320,8 +342,16 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
     g_start_cmd = msg.HondaStart;
 
     if (g_start_cmd) {
-        if (!g_honda_running && !g_honda_starting)
-            xTaskCreate((void(*)(void*))honda_start, "hstart", 4096, NULL, 5, NULL);
+        if (!g_honda_running && !g_honda_starting) {
+            /* Claim the sequence here, before the task exists -- recv callbacks
+             * run one at a time, so this closes the window where Master's
+             * redundant double-send (20 ms apart) could spawn two sequences. */
+            g_honda_starting = true;
+            if (xTaskCreate(honda_start_task, "hstart", 4096, NULL, 5, NULL) != pdPASS) {
+                g_honda_starting = false;   /* couldn't spawn -- release the claim */
+                ESP_LOGE(TAG, "Failed to create start-sequence task");
+            }
+        }
     } else {
         honda_stop();
     }
@@ -377,6 +407,10 @@ static void gpio_init_pins(void) {
 
 /* ── Status Task ─────────────────────────────────────────────────────────────── */
 static void status_task(void *arg) {
+    /* Baseline immediately so /api/sysinfo never reports the UINT32_MAX
+     * sentinel during the first sampling interval after boot. */
+    g_heap_min       = esp_get_free_heap_size();
+    g_heap_min_ts_us = esp_timer_get_time();
     for (;;) {
         vTaskDelay(pdMS_TO_TICKS(STATUS_SEND_MS));
         send_status();

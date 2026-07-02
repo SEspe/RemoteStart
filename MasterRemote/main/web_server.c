@@ -338,7 +338,8 @@ static esp_err_t h_root(httpd_req_t *req)
     char ip[16] = "?";
     esp_netif_ip_info_t info;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-    if (netif) { esp_netif_get_ip_info(netif, &info); snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip)); }
+    if (netif && esp_netif_get_ip_info(netif, &info) == ESP_OK)
+        snprintf(ip, sizeof(ip), IPSTR, IP2STR(&info.ip));
 
     /* Build into a freshly-sized buffer rather than mutating a strdup() of
      * the template in place -- the IP string is usually longer than the
@@ -544,6 +545,32 @@ static esp_err_t h_wifi_setup(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* In-place decode of application/x-www-form-urlencoded text: '+' becomes a
+ * space and %XX becomes the encoded byte. Without this, any SSID or password
+ * containing a space or symbol was saved in its encoded form, and the device
+ * rebooted into a connect-fail/portal loop. Decoded text never grows. */
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static void url_decode(char *s)
+{
+    char *o = s;
+    while (*s) {
+        int hi, lo;
+        if (*s == '+') { *o++ = ' '; s++; }
+        else if (*s == '%' && (hi = hexval(s[1])) >= 0 && (lo = hexval(s[2])) >= 0) {
+            *o++ = (char)(hi * 16 + lo);
+            s += 3;
+        } else *o++ = *s++;
+    }
+    *o = '\0';
+}
+
 /* POST /wifi-save  ── save credentials from portal form */
 static esp_err_t h_wifi_save(httpd_req_t *req)
 {
@@ -567,6 +594,8 @@ static esp_err_t h_wifi_save(httpd_req_t *req)
         if (end) *end = '\0';
         strlcpy(g_new_pass, pp, sizeof(g_new_pass));
     }
+    url_decode(g_new_ssid);
+    url_decode(g_new_pass);
 
     httpd_resp_set_type(req, "text/html");
     httpd_resp_sendstr(req,

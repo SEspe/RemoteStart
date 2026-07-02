@@ -276,6 +276,7 @@ slave_info_t g_slave_wallas = {0};
 static EventGroupHandle_t  s_wifi_eg;
 static int                 s_retry_count = 0;
 static bool                s_wifi_ever_connected = false;
+static bool                g_portal_mode = false;
 volatile uint32_t          g_wifi_disconnect_count = 0;
 #define MAX_RETRY 5
 
@@ -310,7 +311,10 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 {
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_START) {
-            esp_wifi_connect();
+            /* In portal (APSTA) mode the STA config still holds the failed
+             * credentials -- don't churn reconnect attempts while the user is
+             * using the portal (same guard as both slaves). */
+            if (!g_portal_mode) esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_wifi_disconnect_count++;
             /* Once we've connected at least once, retry forever — MAX_RETRY only
@@ -338,7 +342,6 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
 volatile bool g_wifi_save_requested = false;
 char          g_new_ssid[64] = {0};
 char          g_new_pass[64] = {0};
-static bool   g_portal_mode  = false;
 
 static void start_config_portal(void)
 {
@@ -539,22 +542,21 @@ static void send_to_wallas(void)
 }
 
 /* ── GPIO ISR ───────────────────────────────────────────────────────────────── */
-static void IRAM_ATTR isr_honda_start(void *arg)
+/* One recompute per command, attached to every pin that feeds it. Each ISR
+ * must OR in ALL of its command's sources -- an edge on one pin recomputing
+ * from a subset silently drops the other sources' contribution (e.g. a manual
+ * button release would cancel a still-active Victron relay demand). Same OR
+ * expressions as h_honda_stop/h_wallas_stop/timer_task recomputes. */
+static void IRAM_ATTR isr_honda_recompute(void *arg)
 {
     g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
                          !gpio_get_level(PIN_HONDA_START) || g_web_honda_start);
 }
-static void IRAM_ATTR isr_honda_manual(void *arg)
+static void IRAM_ATTR isr_wallas_recompute(void *arg)
 {
-    g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) || g_web_honda_start);
-}
-static void IRAM_ATTR isr_wallas_start(void *arg)
-{
-    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) || g_web_wallas_start || g_timer_wallas_start);
-}
-static void IRAM_ATTR isr_wallas_manual(void *arg)
-{
-    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_MANUAL_START) || g_web_wallas_start || g_timer_wallas_start);
+    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
+                          !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
+                          g_web_wallas_start || g_timer_wallas_start);
 }
 
 static void gpio_init(void)
@@ -589,16 +591,19 @@ static void gpio_init(void)
     };
     gpio_config(&in_pu);
 
-    /* Read initial states */
-    g_honda_start_cmd  = !gpio_get_level(PIN_HONDA_START);
-    g_wallas_start_cmd =  gpio_get_level(PIN_WALLAS_START);
+    /* Read initial states -- full OR of all boot-time sources, same
+     * expressions as the ISRs (web/timer sources are always false here) */
+    g_honda_start_cmd  = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
+                          !gpio_get_level(PIN_HONDA_START));
+    g_wallas_start_cmd = (gpio_get_level(PIN_WALLAS_START) ||
+                          !gpio_get_level(PIN_WALLAS_MANUAL_START));
 
     /* Install ISR service and attach handlers */
     gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-    gpio_isr_handler_add(PIN_HONDA_START,        isr_honda_start,  NULL);
-    gpio_isr_handler_add(PIN_HONDA_MANUAL_START, isr_honda_manual, NULL);
-    gpio_isr_handler_add(PIN_WALLAS_START,       isr_wallas_start, NULL);
-    gpio_isr_handler_add(PIN_WALLAS_MANUAL_START,isr_wallas_manual,NULL);
+    gpio_isr_handler_add(PIN_HONDA_START,        isr_honda_recompute,  NULL);
+    gpio_isr_handler_add(PIN_HONDA_MANUAL_START, isr_honda_recompute,  NULL);
+    gpio_isr_handler_add(PIN_WALLAS_START,       isr_wallas_recompute, NULL);
+    gpio_isr_handler_add(PIN_WALLAS_MANUAL_START,isr_wallas_recompute, NULL);
 }
 
 /* ── Beacon Task ────────────────────────────────────────────────────────────── */
