@@ -3,10 +3,11 @@ name: Build & Release (ESP-IDF)
 on:
   push:
     tags:
-      - 'v*'         # e.g. v1.0.0  → builds all three units
+      - 'v*'         # e.g. v1.0.0  → builds all four units
       - 'master-v*'  # e.g. master-v1.1.0 → MasterRemote only
       - 'honda-v*'   # e.g. honda-v1.0.1  → SlaveHonda only
       - 'wallas-v*'  # e.g. wallas-v1.0.2 → SlaveWallas only
+      - 'relay-v*'   # e.g. relay-v1.0.1  → ESPNowRelay only
 
 env:
   IDF_VERSION: v6.0.1   # pin ESP-IDF version
@@ -90,11 +91,37 @@ jobs:
           name: SlaveWallas
           path: ${{ env.BIN }}
 
+  build-relay:
+    name: Build ESPNowRelay
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref_name, 'v') || startsWith(github.ref_name, 'relay-')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: esp32c6
+          path: ESPNowRelay
+          command: idf.py build
+
+      - name: Extract version & rename bin
+        run: |
+          VER=$(grep 'FIRMWARE_VERSION' ESPNowRelay/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          cp ESPNowRelay/build/ESPNowRelay.bin ESPNowRelay_v${VER}.bin
+          echo "BIN=ESPNowRelay_v${VER}.bin" >> $GITHUB_ENV
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ESPNowRelay
+          path: ${{ env.BIN }}
+
   release:
     name: Create GitHub Release
     runs-on: ubuntu-latest
-    needs: [build-master, build-honda, build-wallas]
-    if: always() && (needs.build-master.result == 'success' || needs.build-honda.result == 'success' || needs.build-wallas.result == 'success')
+    needs: [build-master, build-honda, build-wallas, build-relay]
+    if: always() && (needs.build-master.result == 'success' || needs.build-honda.result == 'success' || needs.build-wallas.result == 'success' || needs.build-relay.result == 'success')
     permissions:
       contents: write
     steps:
@@ -129,7 +156,7 @@ jobs:
 
             ${{ steps.versions.outputs.summary }}
 
-            Built with ESP-IDF ${{ env.IDF_VERSION }}. MasterRemote/SlaveHonda target ESP32; SlaveWallas targets ESP32-C6.
+            Built with ESP-IDF ${{ env.IDF_VERSION }}. MasterRemote/SlaveHonda target ESP32; SlaveWallas/ESPNowRelay target ESP32-C6.
 
             ### Flash via OTA
             1. Open device web UI → **OTA Update** tab

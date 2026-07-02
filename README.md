@@ -9,6 +9,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 | MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Nodes, Weekly Timer, OTA Update |
 | SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, Debug GPIO, OTA Update |
 | SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug GPIO, OTA Update |
+| ESPNowRelay  | ESP32-C6 | Optional ESP-NOW store-and-forward repeater (see FSD §13) | Status (traffic/peers), OTA Update |
 
 ## Framework
 
@@ -19,6 +20,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **ESP-NOW** peer-to-peer communication between units — no router hop needed for control traffic
 - **Dynamic peer discovery** — each unit uses its own factory MAC and self-registers by function role over a broadcast beacon; no hardcoded peer table (see FSD §3.2)
 - **SlaveHonda WiFi-optional fallback** — if it can't reach the router, it scans ESP-NOW channels for MasterRemote directly and keeps operating without an IP
+- **ESPNowRelay repeater** (optional) — a transparent store-and-forward proxy that extends radio reach between MasterRemote and a far slave, with zero firmware changes on the other units; live traffic counters (count, sender, receiver, RSSI, last seen) on its own web UI (see FSD §13)
 - **Native captive portal** — first-startup WiFi setup with network scan, served by `esp_http_server` directly
 - **Web UI per unit** — live pin status, node roster with per-link RSSI/channel (MasterRemote), manual start/stop override, OTA update
 - **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a Wallas start source alongside the Victron relay and web override (the physical manual button is obsolete/unwired on the current MasterRemote hardware as of v1.29, see FSD §2.2) (see FSD §6.1a)
@@ -41,8 +43,8 @@ MasterRemote and SlaveWallas require WiFi. SlaveHonda prefers it but can operate
 
 ```bash
 # One-time ESP-IDF v6.0.1 environment setup (see FSD §11), then per unit:
-cd MasterRemote            # or SlaveHonda / SlaveWallas
-idf.py set-target esp32c6 # SlaveWallas only, first build
+cd MasterRemote            # or SlaveHonda / SlaveWallas / ESPNowRelay
+idf.py set-target esp32c6 # SlaveWallas & ESPNowRelay only, first build
 idf.py -p COMx flash
 ```
 
