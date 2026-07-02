@@ -50,7 +50,12 @@ static const char *TAG = FIRMWARE_NAME;
 /* ── Pins ────────────────────────────────────────────────────────────────────── */
 #define PIN_STARTER_RELAY   GPIO_NUM_13   /* active LOW = crank ON     */
 #define PIN_IGNITION_RELAY  GPIO_NUM_14   /* active LOW = ignition ON  */
-#define PIN_RUNNING_FB      GPIO_NUM_15   /* LOW = engine running      */
+#define PIN_RUNNING_FB      GPIO_NUM_15   /* LOW = engine running -- NOT WIRED on this
+                                            * hardware revision as of 2026-07-02; the
+                                            * pin has no pull resistor and floats, so
+                                            * its reading is untrustworthy. g_honda_running
+                                            * is hardcoded false below until it's connected
+                                            * to a real feedback sensor -- see FSD §2.3/§12. */
 #define PIN_LED_EXT         GPIO_NUM_4
 #define PIN_LED_ONBOARD     GPIO_NUM_2
 
@@ -254,7 +259,11 @@ static void honda_start(void) {
         return;
     }
     vTaskDelay(pdMS_TO_TICKS(1000));
-    g_honda_running  = !gpio_get_level(PIN_RUNNING_FB);
+    g_honda_running  = false;   /* PIN_RUNNING_FB not wired -- see its #define above.
+                                  * Deliberately not "true": Master only resends a start
+                                  * when g_honda_start_cmd != g_slave_honda_running, so a
+                                  * false-positive "running" here would silently suppress
+                                  * a real start command from ever being sent. */
     g_honda_starting = false;
     ESP_LOGI(TAG, "Running: %d", g_honda_running);
 }
@@ -278,7 +287,7 @@ static void espnow_add_peer(const uint8_t *mac) {
 
 static void send_status(void) {
     if (!s_master_known) return;   /* Master not discovered yet — nothing to send to */
-    g_honda_running = !gpio_get_level(PIN_RUNNING_FB);
+    g_honda_running = false;   /* PIN_RUNNING_FB not wired -- see its #define above */
     slave_msg_t msg = {0};
     strlcpy(msg.label, "SlaveHonda->Master", sizeof(msg.label));
     msg.HondaIgnitionOn = g_honda_ign_on;

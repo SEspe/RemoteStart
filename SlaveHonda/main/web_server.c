@@ -38,7 +38,6 @@ extern          int64_t  g_heap_min_ts_us;
 
 #define PIN_STARTER_RELAY   13
 #define PIN_IGNITION_RELAY  14
-#define PIN_RUNNING_FB      15
 
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
 static const char WIFI_SETUP_HTML[] =
@@ -268,7 +267,7 @@ static esp_err_t h_status(httpd_req_t *req)
         "{\"ign\":%s,\"sta\":%s,\"run\":%s,\"cmd\":%s,\"starting\":%s}",
         !gpio_get_level(PIN_IGNITION_RELAY) ? "true":"false",
         !gpio_get_level(PIN_STARTER_RELAY)  ? "true":"false",
-        !gpio_get_level(PIN_RUNNING_FB)     ? "true":"false",
+        g_honda_running  ? "true":"false",   /* not PIN_RUNNING_FB directly -- see main.c, unwired on this hardware */
         g_start_cmd      ? "true":"false",
         g_honda_starting ? "true":"false");
     httpd_resp_set_type(req, "application/json");
