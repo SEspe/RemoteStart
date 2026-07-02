@@ -307,7 +307,11 @@ static void espnow_init(void) {
 static void gpio_init_pins(void) {
     gpio_config_t out = {
         .pin_bit_mask = (1ULL<<PIN_WALLAS_RELAY)|(1ULL<<PIN_STATUS_LED)|(1ULL<<PIN_HEATER_LED),
-        .mode = GPIO_MODE_OUTPUT, .intr_type = GPIO_INTR_DISABLE };
+        /* INPUT_OUTPUT (not plain OUTPUT): enables the read-back buffer so
+         * gpio_get_level() returns the actual driven level -- a plain OUTPUT
+         * pin always reads 0, which made /api/status's relay/led fields
+         * permanently false regardless of true state (FSD v1.36). */
+        .mode = GPIO_MODE_INPUT_OUTPUT, .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&out);
     gpio_set_level(PIN_WALLAS_RELAY, 0);
     gpio_set_level(PIN_STATUS_LED,   0);

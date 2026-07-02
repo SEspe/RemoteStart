@@ -417,7 +417,11 @@ static void gpio_init_pins(void) {
     gpio_config_t out = {
         .pin_bit_mask = (1ULL<<PIN_STARTER_RELAY)|(1ULL<<PIN_IGNITION_RELAY)|
                         (1ULL<<PIN_LED_EXT)|(1ULL<<PIN_LED_ONBOARD),
-        .mode = GPIO_MODE_OUTPUT, .intr_type = GPIO_INTR_DISABLE };
+        /* INPUT_OUTPUT (not plain OUTPUT): enables the read-back buffer so
+         * gpio_get_level() returns the actual driven level. A plain OUTPUT
+         * pin always reads 0, which made the web UI's ignition/starter dots
+         * show permanently true (active-LOW inversion of a stuck 0) -- FSD v1.36. */
+        .mode = GPIO_MODE_INPUT_OUTPUT, .intr_type = GPIO_INTR_DISABLE };
     gpio_config(&out);
     gpio_set_level(PIN_STARTER_RELAY,  1);   /* relay OFF */
     gpio_set_level(PIN_IGNITION_RELAY, 1);   /* relay OFF */
