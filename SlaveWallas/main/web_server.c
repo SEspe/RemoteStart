@@ -30,6 +30,7 @@ extern volatile bool     g_wifi_save_requested;
 extern char              g_new_ssid[64];
 extern char              g_new_pass[64];
 extern volatile uint32_t g_wifi_disconnect_count;
+extern volatile int64_t  g_wifi_last_disc_ts_us;
 extern          uint32_t g_heap_min;
 extern          int64_t  g_heap_min_ts_us;
 
@@ -240,7 +241,8 @@ static const char INDEX_HTML[] =
 "document.getElementById('sys').innerHTML="
 "txtRow('Free Heap',fmtKB(d.heap))+"
 "txtRow('Min Free Heap (low-water)',fmtKB(d.heapMin)+' \\u2014 '+fmtUptime(d.heapMinAgo)+' ago')+"
-"txtRow('Uptime',fmtUptime(d.uptime))+txtRow('WiFi Reconnects',d.wifiDisc);"
+"txtRow('Uptime',fmtUptime(d.uptime))+txtRow('WiFi Reconnects',d.wifiDisc)+"
+"txtRow('Last WiFi Reconnect',d.wifiDiscAgo<0?'never':fmtUptime(d.wifiDiscAgo)+' ago');"
 "}).catch(()=>{});}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
@@ -393,13 +395,21 @@ static esp_err_t h_status(httpd_req_t *req)
  * web server (a steadily falling heap low-water mark is the tell). */
 static esp_err_t h_sysinfo(httpd_req_t *req)
 {
-    char buf[160];
-    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,\"wifiDisc\":%lu}",
+    /* wifiDiscAgo: seconds since the last WIFI_EVENT_STA_DISCONNECTED, or -1
+     * if none since boot -- lets you compare units querying at roughly the
+     * same moment to tell a synchronized (shared router/AP-side) disconnect
+     * apart from independent per-unit RF flakiness. */
+    long long disc_ago = g_wifi_last_disc_ts_us
+        ? (long long)((esp_timer_get_time() - g_wifi_last_disc_ts_us) / 1000000)
+        : -1;
+    char buf[192];
+    snprintf(buf, sizeof(buf), "{\"heap\":%lu,\"heapMin\":%lu,\"heapMinAgo\":%lld,\"uptime\":%lld,\"wifiDisc\":%lu,\"wifiDiscAgo\":%lld}",
         (unsigned long)esp_get_free_heap_size(),
         (unsigned long)g_heap_min,
         (long long)((esp_timer_get_time() - g_heap_min_ts_us) / 1000000),
         (long long)(esp_timer_get_time() / 1000000),
-        (unsigned long)g_wifi_disconnect_count);
+        (unsigned long)g_wifi_disconnect_count,
+        disc_ago);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

@@ -277,6 +277,7 @@ static int                 s_retry_count = 0;
 static bool                s_wifi_ever_connected = false;
 static bool                g_portal_mode = false;
 volatile uint32_t          g_wifi_disconnect_count = 0;
+volatile int64_t           g_wifi_last_disc_ts_us  = 0;   /* 0 = never disconnected since boot */
 #define MAX_RETRY 5
 
 /* ── NVS helpers ────────────────────────────────────────────────────────────── */
@@ -385,6 +386,7 @@ static void wifi_event_handler(void *arg, esp_event_base_t base,
             if (!g_portal_mode) esp_wifi_connect();
         } else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_wifi_disconnect_count++;
+            g_wifi_last_disc_ts_us = esp_timer_get_time();
             /* Once we've connected at least once, retry forever — MAX_RETRY only
              * governs the initial boot decision to fall back to the config portal. */
             if (s_wifi_ever_connected || s_retry_count < MAX_RETRY) {

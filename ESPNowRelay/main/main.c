@@ -117,6 +117,7 @@ static int64_t s_last_fwd_us = 0;   /* drives the LED activity blink */
 
          bool     g_has_wifi = false;
 volatile uint32_t g_wifi_disconnect_count = 0;
+volatile int64_t  g_wifi_last_disc_ts_us  = 0;   /* 0 = never disconnected since boot */
          uint32_t g_heap_min       = UINT32_MAX;
          int64_t  g_heap_min_ts_us = 0;
 
@@ -235,6 +236,7 @@ static void wifi_event_handler(void *a, esp_event_base_t base, int32_t id, void 
         if (id == WIFI_EVENT_STA_START && !g_portal_mode) esp_wifi_connect();
         else if (id == WIFI_EVENT_STA_DISCONNECTED) {
             g_wifi_disconnect_count++;
+            g_wifi_last_disc_ts_us = esp_timer_get_time();
             /* Once we've connected at least once, retry forever — MAX_RETRY only
              * governs the initial boot decision to fall back. */
             if (s_wifi_ever_connected || s_retry++ < MAX_RETRY) esp_wifi_connect();
