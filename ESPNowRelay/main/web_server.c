@@ -31,6 +31,13 @@ extern          uint32_t g_heap_min;
 extern          int64_t  g_heap_min_ts_us;
 extern          bool     g_has_wifi;
 
+extern bool              g_ipcfg_static;
+extern char              g_ipcfg_ip[16];
+extern char              g_ipcfg_mask[16];
+extern char              g_ipcfg_gw[16];
+extern char              g_ipcfg_dns[16];
+extern volatile bool     g_ipcfg_save_requested;
+
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
 static const char WIFI_SETUP_HTML[] =
 "<!DOCTYPE html><html><head><meta charset='UTF-8'>"
@@ -123,11 +130,29 @@ static const char INDEX_HTML[] =
 ".prog{margin-top:10px;font-size:.85rem;color:#e94560;min-height:1.2em}"
 "button.up{padding:8px 20px;background:#e94560;border:none;border-radius:5px;"
 "color:#fff;cursor:pointer;font-size:.9rem}"
+".wf-lbl{display:block;margin:10px 0 4px;font-size:.85rem}"
+".wf-in{width:100%;max-width:280px;padding:8px;background:#0f3460;border:1px solid #444;"
+"border-radius:5px;color:#eee;box-sizing:border-box}"
+".wf-btn{padding:10px 20px;border:none;border-radius:5px;color:#fff;"
+"cursor:pointer;font-size:.9rem;margin-top:10px}"
+".wf-btn-s{background:#0f3460;border:1px solid #e94560}"
+".wf-btn-c{background:#e94560}"
+".wf-sts{font-size:.75rem;color:#888;min-height:1rem;margin:6px 0}"
+".wf-nets{max-height:160px;overflow-y:auto;margin-bottom:10px;max-width:320px}"
+".wf-net{background:#0f3460;border-radius:5px;padding:8px 12px;margin-bottom:4px;"
+"cursor:pointer;display:flex;justify-content:space-between;align-items:center;"
+"font-size:.85rem}"
+".wf-net:hover{background:#1a4a80}"
+".wf-meta{font-size:.72rem;color:#aaa}"
+".wf-lk{color:#e94560}"
+".wf-radio{font-size:.88rem;margin-right:18px}"
+".wf-warn{font-size:.78rem;color:#e9b400;margin:10px 0}"
 "</style></head><body>"
 "<div class='hdr'><h1>&#9889; ESPNowRelay</h1>"
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Status</button>"
+"<button class='tab' onclick='show(\"wifinet\",this)'>WiFi</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
@@ -136,6 +161,35 @@ static const char INDEX_HTML[] =
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>&#8230;</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>&#8230;</div></div>"
 "<div class='ts' id='sts'></div></div>"
+"<div id='wifinet' class='pane'>"
+"<div class='card'><h3>WiFi Network</h3>"
+"<div class='wf-sts' id='wfSts'></div>"
+"<button class='wf-btn wf-btn-s' onclick='wfScan()'>&#128246; Scan Networks</button>"
+"<div class='wf-nets' id='wfNets'></div>"
+"<form action='/wifi-save' method='POST'>"
+"<label class='wf-lbl'>SSID</label>"
+"<input class='wf-in' id='wfSid' name='ssid' type='text' placeholder='tap network or type' required>"
+"<label class='wf-lbl'>Password</label>"
+"<input class='wf-in' name='pass' type='password' placeholder='leave blank if open'>"
+"<br><button class='wf-btn wf-btn-c' type='submit'>Connect &amp; Save</button>"
+"</form></div>"
+"<div class='card'><h3>IP Configuration</h3>"
+"<div class='grid' id='ipLive'>…</div>"
+"<form action='/api/ipconfig/save' method='POST' onsubmit='return ipValidate()'>"
+"<label class='wf-radio'><input type='radio' name='mode' value='dhcp' id='ipDhcp' checked "
+"onchange='ipModeChange()'> Automatic (DHCP)</label>"
+"<label class='wf-radio'><input type='radio' name='mode' value='static' id='ipStatic' "
+"onchange='ipModeChange()'> Static IP</label>"
+"<div id='ipFields' style='display:none'>"
+"<label class='wf-lbl'>IP Address</label><input class='wf-in' name='ip' id='ipAddr' type='text' placeholder='192.168.1.50'>"
+"<label class='wf-lbl'>Subnet Mask</label><input class='wf-in' name='mask' id='ipMask' type='text' placeholder='255.255.255.0'>"
+"<label class='wf-lbl'>Gateway</label><input class='wf-in' name='gw' id='ipGw' type='text' placeholder='192.168.1.1'>"
+"<label class='wf-lbl'>DNS Server</label><input class='wf-in' name='dns' id='ipDns' type='text' placeholder='optional'>"
+"</div>"
+"<p class='wf-warn'>Saving reboots the device to apply. If a static IP is unreachable afterward, "
+"recover over USB (erase NVS to restore DHCP).</p>"
+"<button class='wf-btn wf-btn-c' type='submit'>Save &amp; Apply</button>"
+"</form></div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
@@ -149,7 +203,8 @@ static const char INDEX_HTML[] =
 "function show(id,btn){"
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
-"document.getElementById(id).classList.add('on');btn.classList.add('on');}"
+"document.getElementById(id).classList.add('on');btn.classList.add('on');"
+"if(id==='wifinet')fetchIpCfg();}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
 "function fmtKB(n){return Math.round(n/1024)+' KB';}"
 "function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
@@ -191,6 +246,45 @@ static const char INDEX_HTML[] =
 "xhr.onload=()=>{p.textContent=xhr.status===200?'Success! Rebooting…':'Error: '+xhr.status;};"
 "xhr.onerror=()=>{p.textContent='Upload error';};"
 "xhr.send(f);}"
+"function wfEsc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
+"function wfScan(){"
+"var st=document.getElementById('wfSts');"
+"st.textContent='Scanning\\u2026';"
+"document.getElementById('wfNets').innerHTML='';"
+"fetch('/api/scan').then(function(r){return r.json();})"
+".then(function(a){"
+"st.textContent=a.length+' network'+(a.length!==1?'s':'')+' found';"
+"var c=document.getElementById('wfNets');"
+"a.forEach(function(n){"
+"var d=document.createElement('div');d.className='wf-net';"
+"d.innerHTML='<span>'+wfEsc(n.ssid)+'</span>"
+"<span class=wf-meta>'+n.rssi+'dBm "
+"'+(n.auth?'<span class=wf-lk>&#128274;</span>':'open')+'</span>';"
+"d.onclick=function(){document.getElementById('wfSid').value=n.ssid;};"
+"c.appendChild(d);});}).catch(function(){"
+"st.textContent='Scan failed \\u2014 try again';});}"
+"function ipModeChange(){"
+"document.getElementById('ipFields').style.display="
+"document.getElementById('ipStatic').checked?'block':'none';}"
+"function ipValidate(){"
+"if(!document.getElementById('ipStatic').checked)return true;"
+"var re=/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/;"
+"if(!re.test(document.getElementById('ipAddr').value)||!re.test(document.getElementById('ipMask').value)){"
+"alert('Enter a valid IP address and subnet mask');return false;}"
+"return true;}"
+"function fetchIpCfg(){"
+"fetch('/api/ipconfig').then(r=>r.json()).then(d=>{"
+"document.getElementById('ipLive').innerHTML="
+"txtRow('Current IP',d.liveIp||'\\u2014')+txtRow('Subnet Mask',d.liveMask||'\\u2014')+"
+"txtRow('Gateway',d.liveGw||'\\u2014');"
+"document.getElementById('ipDhcp').checked=!d.static;"
+"document.getElementById('ipStatic').checked=d.static;"
+"document.getElementById('ipAddr').value=d.ip;"
+"document.getElementById('ipMask').value=d.mask;"
+"document.getElementById('ipGw').value=d.gw;"
+"document.getElementById('ipDns').value=d.dns;"
+"ipModeChange();"
+"}).catch(()=>{});}"
 "setInterval(()=>{"
 "if(document.getElementById('status').classList.contains('on')){fetchStatus();fetchSys();}"
 "},2000);"
@@ -445,6 +539,80 @@ static esp_err_t h_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/ipconfig  ── saved DHCP/static config + the currently active IP */
+static esp_err_t h_ipcfg_get(httpd_req_t *req)
+{
+    char live_ip[16] = "", live_mask[16] = "", live_gw[16] = "";
+    esp_netif_ip_info_t info;
+    esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+    if (netif && esp_netif_get_ip_info(netif, &info) == ESP_OK) {
+        snprintf(live_ip,   sizeof(live_ip),   IPSTR, IP2STR(&info.ip));
+        snprintf(live_mask, sizeof(live_mask), IPSTR, IP2STR(&info.netmask));
+        snprintf(live_gw,   sizeof(live_gw),   IPSTR, IP2STR(&info.gw));
+    }
+    char buf[400];
+    snprintf(buf, sizeof(buf),
+        "{\"static\":%s,\"ip\":\"%s\",\"mask\":\"%s\",\"gw\":\"%s\",\"dns\":\"%s\","
+        "\"liveIp\":\"%s\",\"liveMask\":\"%s\",\"liveGw\":\"%s\"}",
+        g_ipcfg_static ? "true" : "false",
+        g_ipcfg_ip, g_ipcfg_mask, g_ipcfg_gw, g_ipcfg_dns,
+        live_ip, live_mask, live_gw);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /api/ipconfig/save  ── mode=dhcp|static&ip=&mask=&gw=&dns=
+ * Validates IPv4 syntax before accepting a static config -- a bad address
+ * would otherwise still associate to the AP (WiFi auth doesn't care) but
+ * leave the unit unreachable over IP, indistinguishable from a hang. */
+static esp_err_t h_ipcfg_save(httpd_req_t *req)
+{
+    char body[256] = {0};
+    int  len = MIN(req->content_len, (int)sizeof(body) - 1);
+    httpd_req_recv(req, body, len);
+
+    char mode[8] = {0}, ip[16] = {0}, mask[16] = {0}, gw[16] = {0}, dns[16] = {0};
+    char *mp = strstr(body, "mode="); char *ip_p = strstr(body, "ip=");
+    char *mk_p = strstr(body, "mask="); char *gw_p = strstr(body, "gw=");
+    char *dn_p = strstr(body, "dns=");
+#define GRAB(p, dst, skip) if(p){p+=skip; char *e=strchr(p,'&'); if(e)*e='\0'; strlcpy(dst,p,sizeof(dst)); if(e)*e='&';}
+    GRAB(mp, mode, 5) GRAB(ip_p, ip, 3) GRAB(mk_p, mask, 5) GRAB(gw_p, gw, 3) GRAB(dn_p, dns, 4)
+#undef GRAB
+    url_decode(ip); url_decode(mask); url_decode(gw); url_decode(dns);
+
+    bool want_static = (strcmp(mode, "static") == 0);
+    if (want_static) {
+        esp_ip4_addr_t test;
+        if (!ip[0] || !mask[0] ||
+            esp_netif_str_to_ip4(ip, &test) != ESP_OK || esp_netif_str_to_ip4(mask, &test) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid IP address or subnet mask");
+            return ESP_OK;
+        }
+        if (gw[0]  && esp_netif_str_to_ip4(gw,  &test) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid gateway"); return ESP_OK;
+        }
+        if (dns[0] && esp_netif_str_to_ip4(dns, &test) != ESP_OK) {
+            httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid DNS server"); return ESP_OK;
+        }
+    }
+
+    g_ipcfg_static = want_static;
+    strlcpy(g_ipcfg_ip,   ip,   sizeof(g_ipcfg_ip));
+    strlcpy(g_ipcfg_mask, mask, sizeof(g_ipcfg_mask));
+    strlcpy(g_ipcfg_gw,   gw,   sizeof(g_ipcfg_gw));
+    strlcpy(g_ipcfg_dns,  dns,  sizeof(g_ipcfg_dns));
+
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req,
+        "<!DOCTYPE html><html><body style='font-family:Arial;background:#1a1a2e;color:#eee;"
+        "display:flex;justify-content:center;align-items:center;min-height:100vh'>"
+        "<div style='text-align:center'><h2 style='color:#e94560'>Saved!</h2>"
+        "<p>Applying network settings and rebooting…</p></div></body></html>");
+    g_ipcfg_save_requested = true;
+    return ESP_OK;
+}
+
 /* ── Start ───────────────────────────────────────────────────────────────────── */
 esp_err_t web_server_start(void)
 {
@@ -465,6 +633,8 @@ esp_err_t web_server_start(void)
         { .uri="/wifi-setup",  .method=HTTP_GET,  .handler=h_wifi_setup },
         { .uri="/wifi-save",   .method=HTTP_POST, .handler=h_wifi_save  },
         { .uri="/api/scan",    .method=HTTP_GET,  .handler=h_scan       },
+        { .uri="/api/ipconfig",      .method=HTTP_GET,  .handler=h_ipcfg_get  },
+        { .uri="/api/ipconfig/save", .method=HTTP_POST, .handler=h_ipcfg_save },
         { .uri="/ota/upload",  .method=HTTP_POST, .handler=h_ota_upload },
     };
     for (size_t i=0; i<sizeof(routes)/sizeof(routes[0]); i++)

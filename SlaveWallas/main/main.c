@@ -124,6 +124,86 @@ char          g_new_ssid[64] = {0};
 char          g_new_pass[64] = {0};
 static bool   g_portal_mode  = false;
 
+/* ── IP configuration (DHCP by default, optional static IP) ────────────────── */
+bool          g_ipcfg_static = false;
+char          g_ipcfg_ip[16]   = {0};
+char          g_ipcfg_mask[16] = {0};
+char          g_ipcfg_gw[16]   = {0};
+char          g_ipcfg_dns[16]  = {0};
+volatile bool g_ipcfg_save_requested = false;
+
+static void nvs_load_ipcfg(void) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    uint8_t mode = 0;
+    nvs_get_u8(h, "ipmode", &mode);
+    g_ipcfg_static = (mode == 1);
+    size_t l;
+    l = sizeof(g_ipcfg_ip);   if (nvs_get_str(h, "ip",   g_ipcfg_ip,   &l) != ESP_OK) g_ipcfg_ip[0]   = '\0';
+    l = sizeof(g_ipcfg_mask); if (nvs_get_str(h, "mask", g_ipcfg_mask, &l) != ESP_OK) g_ipcfg_mask[0] = '\0';
+    l = sizeof(g_ipcfg_gw);   if (nvs_get_str(h, "gw",   g_ipcfg_gw,   &l) != ESP_OK) g_ipcfg_gw[0]   = '\0';
+    l = sizeof(g_ipcfg_dns);  if (nvs_get_str(h, "dns",  g_ipcfg_dns,  &l) != ESP_OK) g_ipcfg_dns[0]  = '\0';
+    nvs_close(h);
+}
+
+static void nvs_save_ipcfg(void) {
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "ipmode", g_ipcfg_static ? 1 : 0);
+        nvs_set_str(h, "ip",   g_ipcfg_ip);
+        nvs_set_str(h, "mask", g_ipcfg_mask);
+        nvs_set_str(h, "gw",   g_ipcfg_gw);
+        nvs_set_str(h, "dns",  g_ipcfg_dns);
+        nvs_commit(h); nvs_close(h);
+    }
+}
+
+/* Applies a saved static IP to the STA netif before esp_wifi_start(); a no-op
+ * (leaves the netif's default DHCP client running) when in DHCP mode or when
+ * the saved ip/mask are missing/invalid. */
+static void apply_static_ip(esp_netif_t *sta_netif) {
+    if (!g_ipcfg_static || !g_ipcfg_ip[0] || !g_ipcfg_mask[0]) return;
+
+    esp_netif_ip_info_t ip_info = {0};
+    if (esp_netif_str_to_ip4(g_ipcfg_ip,   &ip_info.ip)      != ESP_OK ||
+        esp_netif_str_to_ip4(g_ipcfg_mask, &ip_info.netmask) != ESP_OK) {
+        ESP_LOGW(TAG, "Saved static IP config invalid — falling back to DHCP");
+        return;
+    }
+    if (g_ipcfg_gw[0]) esp_netif_str_to_ip4(g_ipcfg_gw, &ip_info.gw);
+
+    esp_netif_dhcpc_stop(sta_netif);
+    esp_netif_set_ip_info(sta_netif, &ip_info);
+    if (g_ipcfg_dns[0]) {
+        esp_netif_dns_info_t dns_info = {0};
+        dns_info.ip.type = ESP_IPADDR_TYPE_V4;
+        if (esp_netif_str_to_ip4(g_ipcfg_dns, &dns_info.ip.u_addr.ip4) == ESP_OK)
+            esp_netif_set_dns_info(sta_netif, ESP_NETIF_DNS_MAIN, &dns_info);
+    }
+    ESP_LOGI(TAG, "Static IP applied: %s / %s gw %s", g_ipcfg_ip, g_ipcfg_mask,
+             g_ipcfg_gw[0] ? g_ipcfg_gw : "-");
+}
+
+/* Watches for a WiFi-credentials or IP-config save requested from the always-
+ * available web UI WiFi tab (as opposed to the first-boot config portal,
+ * which has its own blocking wait loop in start_config_portal() below) and
+ * persists + reboots to apply. */
+static void config_apply_task(void *arg) {
+    for (;;) {
+        if (g_wifi_save_requested) {
+            nvs_save_wifi(g_new_ssid, g_new_pass);
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        }
+        if (g_ipcfg_save_requested) {
+            nvs_save_ipcfg();
+            vTaskDelay(pdMS_TO_TICKS(500));
+            esp_restart();
+        }
+        vTaskDelay(pdMS_TO_TICKS(200));
+    }
+}
+
 static void wifi_event_handler(void *a, esp_event_base_t base, int32_t id, void *data) {
     if (base == WIFI_EVENT) {
         if (id == WIFI_EVENT_STA_START && !g_portal_mode) esp_wifi_connect();
@@ -164,12 +244,14 @@ static void wifi_init_and_connect(void) {
     s_wifi_eg = xEventGroupCreate();
     esp_netif_init();
     esp_event_loop_create_default();
-    esp_netif_create_default_wifi_sta();
+    esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);   /* own factory MAC, never overridden */
     esp_event_handler_register(WIFI_EVENT, ESP_EVENT_ANY_ID,    &wifi_event_handler, NULL);
     esp_event_handler_register(IP_EVENT,   IP_EVENT_STA_GOT_IP, &wifi_event_handler, NULL);
+
+    nvs_load_ipcfg();
 
     char ssid[64]={0}, pass[64]={0};
     if (nvs_load_wifi(ssid, pass, sizeof(ssid)) == ESP_OK && ssid[0]) {
@@ -177,6 +259,7 @@ static void wifi_init_and_connect(void) {
         strlcpy((char*)sta.sta.ssid,     ssid, sizeof(sta.sta.ssid));
         strlcpy((char*)sta.sta.password, pass, sizeof(sta.sta.password));
         esp_wifi_set_config(WIFI_IF_STA, &sta);
+        apply_static_ip(sta_netif);
         esp_wifi_start();
         /* Default modem-sleep power save adds real latency to HTTP over WiFi
          * (radio sleeps between beacons, only wakes at DTIM intervals) -- mains/
@@ -364,8 +447,9 @@ void app_main(void)
     wifi_init_and_connect();
     espnow_init();
 
-    xTaskCreate(status_task,    "status",    3072, NULL, 4, NULL);
-    xTaskCreate(heartbeat_task, "heartbeat", 1024, NULL, 2, NULL);
+    xTaskCreate(status_task,       "status",   3072, NULL, 4, NULL);
+    xTaskCreate(heartbeat_task,    "heartbeat",1024, NULL, 2, NULL);
+    xTaskCreate(config_apply_task, "cfgapply", 2048, NULL, 3, NULL);
 
     ESP_LOGI(TAG, "Ready");
 }

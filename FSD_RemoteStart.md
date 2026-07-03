@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.36  
+**Version:** 1.37  
 **Author:** SEspe  
-**Date:** 2026-07-02  
+**Date:** 2026-07-03  
 **Changelog:**
+- v1.37 — **New always-accessible WiFi tab (all four units) with DHCP/static IP selection.** Previously, WiFi network (SSID/password) settings were only reachable via the first-boot `/wifi-setup` config portal — the route stayed registered during normal operation too, but nothing ever consumed a save submitted outside the portal's own blocking wait loop, so changing credentials from an already-running unit silently did nothing. Fixed as part of this change: a new `config_apply_task` (spawned in `app_main` on all four units) watches `g_wifi_save_requested`/`g_ipcfg_save_requested` for the life of the device and persists + reboots on either, so the web UI's WiFi tab is now genuinely functional at any time, not just during initial setup. The new **WiFi** tab (added to every unit's tab bar, alongside Status/Debug/Nodes/etc.) has two cards: **WiFi Network** (unchanged SSID/password form + scan, now embedded directly in the dashboard instead of only the standalone portal page) and **IP Configuration** — a DHCP/Static IP radio (DHCP is the default and unchanged behavior), with IP address/subnet mask/gateway/DNS fields shown only in Static mode. Saving either card reboots the unit to apply. Backend: new NVS keys `ipmode`/`ip`/`mask`/`gw`/`dns` (same `NVS_NAMESPACE` as WiFi credentials — erasing NVS to reset WiFi credentials, §4, also resets IP config back to DHCP); `apply_static_ip()` in `main.c` calls `esp_netif_dhcpc_stop()` + `esp_netif_set_ip_info()` (+ `esp_netif_set_dns_info()` if a DNS server is set) on the STA netif before `esp_wifi_start()`, applied only when a saved static IP/mask are both present and pass `esp_netif_str_to_ip4()` validation — an invalid saved config silently falls back to DHCP rather than leaving the unit unreachable. New endpoints `GET /api/ipconfig` (saved config + the currently-active IP/mask/gateway) and `POST /api/ipconfig/save` (mode/ip/mask/gw/dns, server-side IPv4 syntax validation before accepting — a syntactically-parseable-but-wrong static IP would otherwise still let the unit associate to the AP, just leaving it unreachable over IP, indistinguishable from a hang). **Caveat:** a wrong-but-valid-looking static IP (e.g. outside the actual LAN's subnet) is not detected by this validation and requires the same USB/NVS-erase recovery as a lost WiFi password (§4/§10). MasterRemote 1.6.0, SlaveHonda 1.4.0, SlaveWallas 1.6.0, ESPNowRelay 1.1.0; additive JSON/NVS change, no wire-format (ESP-NOW) change.
 - v1.36 — **Fixed all output-pin status readbacks by configuring status-relevant outputs as `GPIO_MODE_INPUT_OUTPUT`** — resolves the long-standing §12 limitation for good. User-reported: SlaveHonda physically sequences correctly (ignition on → crank), but the web UI's Ignition/Starter dots showed **true all the time**. Root cause: a plain `GPIO_MODE_OUTPUT` pin has its input buffer disabled on ESP32, so `gpio_get_level()` always returns 0 — through SlaveHonda's active-LOW inversion that stuck 0 rendered as permanently-true dots, while SlaveWallas's non-inverted `relay`/`led` fields and MasterRemote's `pFB` read permanently *false* by the same mechanism. `GPIO_MODE_INPUT_OUTPUT` additionally enables the read-back buffer (no electrical difference for a push-pull output), so `gpio_get_level()` now returns the genuinely driven pin level and every status dot reflects true hardware state. Applied to SlaveHonda (starter/ignition relays + both LEDs), SlaveWallas (heater relay + both LEDs), MasterRemote (Honda-running FB LED + status LED); ESPNowRelay unaffected (no output readbacks). The §12 caveat about untrustworthy output readbacks is now obsolete and marked resolved. MasterRemote 1.5.10, SlaveHonda 1.3.11, SlaveWallas 1.5.10; no data-model or API change.
 - v1.35 — **Root-caused and fixed the day-long intermittent "web server unreachable while ESP-NOW keeps working" pattern on all units: httpd session-socket exhaustion.** ESP-IDF's `HTTPD_DEFAULT_CONFIG()` allows 7 concurrent session sockets with `lru_purge_enable` **off** — every client connection abandoned without a clean close (a browser keep-alive, a monitoring poll that hit its client-side timeout, a process exiting mid-request) permanently occupies a slot, and once all 7 are held by dead sessions the server stops servicing HTTP entirely until a reboot. Definitively diagnosed live on MasterRemote: ICMP ping fine (6–10 ms), raw TCP handshake to :80 *accepted* (lwIP's kernel-level backlog), but HTTP requests never serviced — the application-level worker had no free session slots. This, alongside the v1.32 power-save latency, was the second half of the recurring flakiness: heavy status polling with hard client timeouts (as done throughout 2026-07-02) is exactly the traffic pattern that leaks sessions fastest, which is why the units being actively monitored were the ones that kept wedging, and why a reboot always "fixed" it. Fixed with `cfg.lru_purge_enable = true` on **all four units** — when the pool is full, the least-recently-used session is evicted to admit the new connection (the standard ESP-IDF remedy; worst case an idle browser tab gets its keep-alive dropped and transparently reconnects). MasterRemote 1.5.9, SlaveHonda 1.3.10, SlaveWallas 1.5.9, ESPNowRelay 1.0.1; no data-model or API change.
 - v1.34 — **New fourth unit: ESPNowRelay (ESP32-C6, v1.0.0)** — an optional store-and-forward ESP-NOW relay/repeater that extends radio reach between MasterRemote and a slave that can't hear it directly (§13). Designed as a **transparent proxy requiring zero firmware changes on the existing three units**: it re-broadcasts MasterRemote's discovery beacon verbatim (a far slave adopts the relay as its "Master" and heartbeats to it), forwards those heartbeats verbatim to the real Master (which registers the relay's MAC as that role's holder), and forwards Master's commands verbatim to the real slave (destination picked from the command's label). Trust and direct↔relayed failover come free from the existing MAC + 30 s staleness rules — every unit trusts its immediate radio peer, whichever path a unit hears consistently holds the role claim, and a stale path re-homes automatically. When all direct links are healthy the relay sits in passive standby. Same infrastructure as the other units: web UI (Status tab with per-class traffic counters — Rx/Fwd/Fail, last sender/receiver MAC, RSSI, last seen — a live peer roster, WiFi Link and System cards; OTA Update tab), first-boot config portal (`ESPNowRelay-Config`), `/api/sysinfo`, `WIFI_PS_NONE` + max TX power, indefinite post-boot WiFi reconnect, URL-decoded portal credentials, httpd handler-cap headroom + checked registration — all prior lessons applied from day one. WiFi-preferred with SlaveHonda-style ESP-NOW channel-scan fallback (relays without an IP/web UI if the router is unreachable). Onboard LED (GPIO2): fast blink = traffic forwarded within the last 10 s, slow = idle/standby. CI: new `build-relay` job, `relay-v*` single-unit tag pattern, and inclusion in unified `v*` releases.
@@ -279,9 +280,17 @@ During the portal, WiFi runs in `WIFI_MODE_APSTA` (rather than AP-only) so the S
 
 > **Status:** this scan feature is implemented in `main.c`/`web_server.c` on all three units but not yet committed to git as of this revision.
 
+### Static IP configuration (v1.37)
+
+Unlike the SSID/password form above (portal-only in practice until v1.37, §1 changelog), IP configuration is set from the always-available **WiFi** tab in each unit's normal web dashboard — no portal required, since the unit already has an IP to reach that dashboard on. Default behavior is unchanged: DHCP, via the STA netif's built-in DHCP client.
+
+To switch a unit to a static IP: open its dashboard → **WiFi** tab → **IP Configuration** card → select **Static IP** → fill in IP address, subnet mask, gateway, and (optionally) DNS server → **Save & Apply**. The unit validates the IPv4 syntax of each field server-side, persists to NVS, and reboots to apply. On the next boot, `apply_static_ip()` (`main.c`) calls `esp_netif_dhcpc_stop()` and `esp_netif_set_ip_info()` (+ `esp_netif_set_dns_info()` if a DNS server was set) on the STA netif *before* `esp_wifi_start()`/`esp_wifi_connect()`, so DHCP is never even attempted in static mode.
+
+> **Caution:** syntax validation catches typos (e.g. `192.168.1.999`) but cannot catch a static IP that's syntactically valid yet wrong for the actual network (wrong subnet, address already in use, wrong gateway) — WiFi association itself doesn't depend on IP configuration, so the unit will still join the AP and simply be unreachable over IP. Recovery is the same as a lost WiFi password: erase NVS over USB (below) to fall back to DHCP.
+
 ### Resetting WiFi credentials
 
-Erase only the NVS partition (preserves firmware):
+Erase only the NVS partition (preserves firmware). This also resets IP configuration back to DHCP (same `NVS_NAMESPACE`, §5):
 ```
 esptool.py -p COMx erase_region 0x9000 0x5000
 ```
@@ -352,6 +361,7 @@ Access at: `http://<MasterRemote-IP>/`
 | Pin Status   | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
+| WiFi (v1.37) | WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open |
 | OTA Update   | File input + XHR upload to `/ota/upload`                     | Manual   |
 
 The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterRemote's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterRemote's own link.
@@ -384,9 +394,11 @@ HTTP endpoints:
 | POST   | `/api/wallas/stop`  | Clear override; recompute from GPIO + timer |
 | GET    | `/api/timer`        | JSON: current clock + all 7 days' timer config |
 | POST   | `/api/timer/set`    | Save one day: `?day=0-6&enabled=0\|1&start=HH:MM&stop=HH:MM` |
-| GET    | `/wifi-setup`       | WiFi credential form (portal only)     |
-| GET    | `/api/scan`         | JSON array of nearby networks (portal only) |
+| GET    | `/wifi-setup`       | WiFi credential form (portal page; also embedded in the WiFi tab, v1.37) |
+| GET    | `/api/scan`         | JSON array of nearby networks          |
 | POST   | `/wifi-save`        | Save credentials to NVS, restart       |
+| GET    | `/api/ipconfig`     | JSON: saved DHCP/static IP config + currently-active IP/mask/gateway (v1.37) |
+| POST   | `/api/ipconfig/save`| Save IP config (`mode=dhcp\|static&ip=&mask=&gw=&dns=`) to NVS, restart (v1.37) |
 | POST   | `/ota/upload`       | Raw binary OTA upload                  |
 
 ### 6.2 SlaveHonda & SlaveWallas — Local Web UI
@@ -397,9 +409,10 @@ Access at: `http://<Slave-IP>/`
 |------------|--------------------------------------------------------|----------|-------|
 | Status     | Relay states, running feedback, last received command, WiFi Link (AP RSSI + channel, v1.33), plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
 | Debug GPIO | System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
+| WiFi (v1.37) | WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open | Both |
 | OTA Update | File input + XHR upload to `/ota/upload`              | Manual   | Both  |
 
-HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/ota/upload`.
+HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/ota/upload`.
 
 `/api/gpio/set` forces a manipulable pin to OUTPUT and drives it (active, overrides normal operation). `/api/gpio/status` is read-only (`gpio_get_level()` on every GPIO, safe to call even on reserved pins since it never reconfigures anything) and backs the Debug tab's status dots — every pin gets a dot, only the non-reserved subset gets ON/OFF buttons. The non-reserved/manipulable set differs per chip:
 
@@ -574,6 +587,9 @@ app_main()
 | Peer add failure                                   | `ESP_LOGE` log, execution continues                       |
 | MasterRemote reboots (roster lost)                  | Self-healing: next heartbeat after each slave's next beacon re-registers it (§3.2), no manual pairing |
 | OTA write error / client aborts mid-upload         | `esp_ota_abort()`, HTTP 500 returned, no reboot. Up to 5 consecutive recv timeouts tolerated before aborting (§8) — a hard client abort no longer wedges the httpd worker indefinitely |
+| `/api/ipconfig/save` given a syntactically invalid IP/mask/gateway/DNS (v1.37) | HTTP 400, nothing saved, no reboot — the unit keeps its prior working config |
+| Saved static IP config unreadable/invalid at boot (v1.37) | `apply_static_ip()` logs a warning and falls back to DHCP rather than applying a broken config |
+| Saved static IP config valid syntax but wrong for the actual LAN (v1.37) | Not detected — WiFi still associates, but the unit is unreachable over IP. Recovery: erase NVS over USB (§4) to fall back to DHCP |
 | Honda: no running feedback                         | Slave reports `HondaRunning = false`; master may retry after 30 s block |
 | Master: no slave heartbeat (node stale, 30 s)       | Nodes tab shows "disconnected"; MasterRemote stops sending to that role until it re-registers |
 | SlaveHonda start sequence (~14 s warm-up + crank)   | Runs in its own task (v1.28) — web server and ESP-NOW stay responsive throughout. A stop command received mid-sequence aborts it within ~100 ms (relays de-energized immediately by `honda_stop()`, the sequence task notices and exits) |
@@ -673,8 +689,9 @@ Because ESP-NOW unicast is only delivered to the addressed MAC, the relay never 
 
 - **Pins:** GPIO2 onboard LED only — fast blink = traffic forwarded within the last 10 s, slow = idle/standby. No relays or inputs.
 - **WiFi:** preferred (web UI/OTA/channel derivation); with saved credentials but no reachable router it falls back to the SlaveHonda-style ESP-NOW channel scan (§3.2) and relays without an IP (no web UI in that state). First boot with no credentials opens the `ESPNowRelay-Config` portal.
-- **Web UI** (`http://<relay-ip>/`), two tabs:
+- **Web UI** (`http://<relay-ip>/`), three tabs (WiFi tab added v1.37):
   - **Status** — *ESP-NOW Traffic* table (per class: Rx count, forwarded, failed, last sender MAC, last forward destination MAC, RSSI of last frame, last seen), *Peers* table (MasterRemote / SlaveHonda / SlaveWallas: MAC, RSSI, last seen), *WiFi Link* card (AP RSSI + channel), *System* card (§10.1). 2 s auto-refresh.
+  - **WiFi** — WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields), same as the other three units (§4/§6.1/§6.2).
   - **OTA Update** — same as all other units.
-- **HTTP endpoints:** `/`, `/api/status`, `/api/sysinfo`, `/wifi-setup`, `/wifi-save`, `/api/scan`, `/ota/upload`.
+- **HTTP endpoints:** `/`, `/api/status`, `/api/sysinfo`, `/wifi-setup`, `/wifi-save`, `/api/scan`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/ota/upload`.
 - All accumulated platform lessons are applied from day one: `WIFI_PS_NONE` + max TX power (§v1.32), indefinite post-boot reconnect (§v1.25), URL-decoded portal credentials (§v1.28), handler-cap headroom + checked route registration (§v1.27), self-sampled heap low-water mark with timestamp (§10.1).
