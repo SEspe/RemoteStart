@@ -189,7 +189,13 @@ static const char INDEX_HTML[] =
 "<p class='wf-warn'>Saving reboots the device to apply. If a static IP is unreachable afterward, "
 "recover over USB (erase NVS to restore DHCP).</p>"
 "<button class='wf-btn wf-btn-c' type='submit'>Save &amp; Apply</button>"
-"</form></div></div>"
+"</form></div>"
+"<div class='card'><h3>Device</h3>"
+"<p class='wf-warn'>Rebooting drops the WiFi/ESP-NOW link briefly and clears in-memory state "
+"(traffic counters, peer roster).</p>"
+"<button class='wf-btn wf-btn-s' onclick='rebootDevice()'>&#128260; Reboot Now</button>"
+"<div class='wf-sts' id='rebootSts'></div>"
+"</div></div>"
 "<div id='ota' class='pane'>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
@@ -263,9 +269,15 @@ static const char INDEX_HTML[] =
 "d.onclick=function(){document.getElementById('wfSid').value=n.ssid;};"
 "c.appendChild(d);});}).catch(function(){"
 "st.textContent='Scan failed \\u2014 try again';});}"
+"var g_liveIp='',g_liveMask='',g_liveGw='';"
 "function ipModeChange(){"
-"document.getElementById('ipFields').style.display="
-"document.getElementById('ipStatic').checked?'block':'none';}"
+"var isStatic=document.getElementById('ipStatic').checked;"
+"document.getElementById('ipFields').style.display=isStatic?'block':'none';"
+"if(isStatic){"
+"var ipEl=document.getElementById('ipAddr'),mEl=document.getElementById('ipMask'),gEl=document.getElementById('ipGw');"
+"if(!ipEl.value&&g_liveIp)ipEl.value=g_liveIp;"
+"if(!mEl.value&&g_liveMask)mEl.value=g_liveMask;"
+"if(!gEl.value&&g_liveGw)gEl.value=g_liveGw;}}"
 "function ipValidate(){"
 "if(!document.getElementById('ipStatic').checked)return true;"
 "var re=/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/;"
@@ -274,6 +286,7 @@ static const char INDEX_HTML[] =
 "return true;}"
 "function fetchIpCfg(){"
 "fetch('/api/ipconfig').then(r=>r.json()).then(d=>{"
+"g_liveIp=d.liveIp||'';g_liveMask=d.liveMask||'';g_liveGw=d.liveGw||'';"
 "document.getElementById('ipLive').innerHTML="
 "txtRow('Current IP',d.liveIp||'\\u2014')+txtRow('Subnet Mask',d.liveMask||'\\u2014')+"
 "txtRow('Gateway',d.liveGw||'\\u2014');"
@@ -285,6 +298,10 @@ static const char INDEX_HTML[] =
 "document.getElementById('ipDns').value=d.dns;"
 "ipModeChange();"
 "}).catch(()=>{});}"
+"function rebootDevice(){"
+"if(!confirm('Reboot the device now?'))return;"
+"document.getElementById('rebootSts').textContent='Rebooting\\u2026';"
+"fetch('/api/reboot',{method:'POST'}).catch(()=>{});}"
 "setInterval(()=>{"
 "if(document.getElementById('status').classList.contains('on')){fetchStatus();fetchSys();}"
 "},2000);"
@@ -613,6 +630,16 @@ static esp_err_t h_ipcfg_save(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/reboot  ── manual reboot from the WiFi tab's Device card */
+static esp_err_t h_reboot(httpd_req_t *req)
+{
+    httpd_resp_sendstr(req, "OK");
+    ESP_LOGW(TAG, "Manual reboot requested via web UI");
+    vTaskDelay(pdMS_TO_TICKS(300));
+    esp_restart();
+    return ESP_OK;
+}
+
 /* ── Start ───────────────────────────────────────────────────────────────────── */
 esp_err_t web_server_start(void)
 {
@@ -635,6 +662,7 @@ esp_err_t web_server_start(void)
         { .uri="/api/scan",    .method=HTTP_GET,  .handler=h_scan       },
         { .uri="/api/ipconfig",      .method=HTTP_GET,  .handler=h_ipcfg_get  },
         { .uri="/api/ipconfig/save", .method=HTTP_POST, .handler=h_ipcfg_save },
+        { .uri="/api/reboot",        .method=HTTP_POST, .handler=h_reboot     },
         { .uri="/ota/upload",  .method=HTTP_POST, .handler=h_ota_upload },
     };
     for (size_t i=0; i<sizeof(routes)/sizeof(routes[0]); i++)
