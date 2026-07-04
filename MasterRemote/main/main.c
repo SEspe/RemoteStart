@@ -55,7 +55,7 @@ static const uint8_t BROADCAST_MAC[] = {0xFF,0xFF,0xFF,0xFF,0xFF,0xFF};
 #define PIN_HONDA_START          GPIO_NUM_15   /* Input:  Victron relay       */
 #define PIN_HONDA_MANUAL_START   GPIO_NUM_14   /* Input:  manual push (PU)    */
 #define PIN_WALLAS_START         GPIO_NUM_4    /* Input:  Victron relay       */
-#define PIN_WALLAS_MANUAL_START  GPIO_NUM_5    /* Input:  manual push (PU)    */
+#define PIN_WALLAS_MANUAL_START  GPIO_NUM_5    /* Input:  manual switch (PU)  */
 
 /* ── Timing (ms) ───────────────────────────────────────────────────────────── */
 #define HONDA_RESTART_BLOCK_MS   30000
@@ -240,6 +240,7 @@ static void timer_task(void *arg)
          * boundary would silently never take effect (same class of bug as
          * the Honda force-send fix, §12). */
         g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
+                               !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
                                g_web_wallas_start || g_timer_wallas_start);
 
         uint32_t cur_heap = esp_get_free_heap_size();
@@ -659,14 +660,18 @@ static void IRAM_ATTR isr_honda_recompute(void *arg)
     g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
                          !gpio_get_level(PIN_HONDA_START) || g_web_honda_start);
 }
-/* PIN_WALLAS_START (GPIO4) reads inverted on this hardware revision (LOW =
- * Victron demanding start) -- opposite of PIN_HONDA_START's polarity, and
- * opposite of what earlier hardware used. PIN_WALLAS_MANUAL_START (GPIO5) is
- * obsolete on this unit -- deliberately left unwired, floats unpredictably,
- * and is NOT part of the command (see FSD §2.1/§12). */
+/* PIN_WALLAS_START (GPIO4) and PIN_WALLAS_MANUAL_START (GPIO5) both read
+ * inverted on this hardware revision (LOW = start demanded) -- opposite of
+ * PIN_HONDA_START's polarity, and opposite of what earlier hardware used.
+ * The manual switch was reconnected 2026-07-04 (previously permanently
+ * unwired/obsolete, see FSD §2.1/§12) -- it's a maintained on/off switch,
+ * not a momentary button, and OR's in as a plain level source like the
+ * Victron relay: On continuously demands start, Off just stops contributing
+ * (other sources can still keep Wallas running). */
 static void IRAM_ATTR isr_wallas_recompute(void *arg)
 {
     g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
+                          !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
                           g_web_wallas_start || g_timer_wallas_start);
 }
 
@@ -710,16 +715,14 @@ static void gpio_init(void)
      * expressions as the ISRs (web/timer sources are always false here) */
     g_honda_start_cmd  = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
                           !gpio_get_level(PIN_HONDA_START));
-    g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_START);
+    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
+                          !gpio_get_level(PIN_WALLAS_MANUAL_START));
 
-    /* Install ISR service and attach handlers. PIN_WALLAS_MANUAL_START gets
-     * no handler -- it's obsolete/unwired on this hardware and must not be
-     * able to trigger a recompute (see isr_wallas_recompute). Still
-     * configured as an input with pull-up above so it doesn't float wildly. */
     gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
-    gpio_isr_handler_add(PIN_HONDA_START,        isr_honda_recompute,  NULL);
-    gpio_isr_handler_add(PIN_HONDA_MANUAL_START, isr_honda_recompute,  NULL);
-    gpio_isr_handler_add(PIN_WALLAS_START,       isr_wallas_recompute, NULL);
+    gpio_isr_handler_add(PIN_HONDA_START,         isr_honda_recompute,  NULL);
+    gpio_isr_handler_add(PIN_HONDA_MANUAL_START,  isr_honda_recompute,  NULL);
+    gpio_isr_handler_add(PIN_WALLAS_START,        isr_wallas_recompute, NULL);
+    gpio_isr_handler_add(PIN_WALLAS_MANUAL_START, isr_wallas_recompute, NULL);
 }
 
 /* ── Beacon Task ────────────────────────────────────────────────────────────── */

@@ -23,7 +23,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **ESPNowRelay repeater** (optional) — a transparent store-and-forward proxy that extends radio reach between MasterRemote and a far slave, with zero firmware changes on the other units; live traffic counters (count, sender, receiver, RSSI, last seen) on its own web UI (see FSD §13)
 - **Native captive portal** — first-startup WiFi setup with network scan, served by `esp_http_server` directly
 - **Web UI per unit** — live pin status, node roster with per-link RSSI/channel (MasterRemote), manual start/stop override, OTA update
-- **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a Wallas start source alongside the Victron relay and web override (the physical manual button is obsolete/unwired on the current MasterRemote hardware as of v1.29, see FSD §2.2) (see FSD §6.1a)
+- **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a Wallas start source alongside the Victron relay, physical manual switch, and web override (see FSD §6.1a)
 - **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash
 - **Individual versioning** — each unit has its own `FIRMWARE_VERSION` in `main/version.h`
 - **Resilient WiFi reconnection** — once a unit has connected once since boot, it retries indefinitely on any later disconnect instead of giving up after a few tries (fixed in v1.25 after a shared WiFi hiccup killed all three units' web servers until a manual power cycle; see FSD §10/§12)
