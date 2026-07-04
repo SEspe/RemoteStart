@@ -31,6 +31,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **WiFi power save disabled, max TX power** — all three units run with `WIFI_PS_NONE` and max TX power instead of ESP-IDF's default modem-sleep, since the DTIM-interval wake latency that power save trades for battery life meaningfully hurts HTTP responsiveness at marginal signal strength, and these units aren't battery-constrained (see FSD §10, v1.32)
 - **WiFi tab (DHCP or static IP)** — every unit's web UI now has an always-accessible WiFi tab: change SSID/password without reopening the config portal, and optionally switch from DHCP to a static IP/subnet/gateway/DNS (switching to Static pre-fills the current live values as a starting suggestion). Defaults to DHCP; saving either setting reboots the unit to apply. The tab also has a manual **Reboot Now** button (see FSD §4, v1.37/v1.38)
 - **Standardized Debug tab** — every unit now has a Debug tab (renamed from "Debug GPIO" on the slaves, newly added on MasterRemote/ESPNowRelay) holding the WiFi Link (RSSI/channel) and System resource monitor cards, keeping the Status tab focused on operational state only (see FSD §6.1/§6.2/§13, v1.40)
+- **ESP-NOW RSSI on the slaves' own UI** — SlaveHonda/SlaveWallas's Debug tab "Radio Link" card now shows the ESP-NOW RSSI/channel of the last frame heard from MasterRemote, alongside the existing WiFi AP RSSI/channel — previously only visible remotely via MasterRemote's Nodes tab (see FSD §6.2, v1.41)
 
 ## First Startup
 

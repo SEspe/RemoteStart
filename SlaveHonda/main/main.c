@@ -106,8 +106,8 @@ volatile int64_t  g_wifi_last_disc_ts_us  = 0;   /* 0 = never disconnected since
 /* ── Master discovery state ─────────────────────────────────────────────────── */
 static uint8_t s_master_mac[6]  = {0};
 static bool    s_master_known   = false;
-static int8_t  s_link_rssi      = 0;   /* last frame heard from MasterRemote */
-static uint8_t s_link_channel   = 0;
+volatile int8_t  g_espnow_rssi    = 0;   /* last frame heard from MasterRemote -- exposed to web_server.c */
+volatile uint8_t g_espnow_channel = 0;
 static int64_t s_master_last_seen_us = 0;
 #define MASTER_STALE_US  ((int64_t)30000 * 1000)   /* matches Master's own NODE_TIMEOUT_MS */
 
@@ -396,8 +396,8 @@ static void send_status(void) {
     msg.HondaStarting   = g_honda_starting;
     msg.HondaRunning    = g_honda_running;
     msg.has_wifi         = g_has_wifi;
-    msg.rssi             = s_link_rssi;
-    msg.channel          = s_link_channel;
+    msg.rssi             = g_espnow_rssi;
+    msg.channel          = g_espnow_channel;
     strlcpy(msg.fw_version, FIRMWARE_VERSION, sizeof(msg.fw_version));
     get_ip_str(msg.ip, sizeof(msg.ip));
     esp_now_send(s_master_mac, (uint8_t *)&msg, sizeof(msg));
@@ -409,8 +409,8 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
                            const uint8_t *data, int len)
 {
     if (info->rx_ctrl) {
-        s_link_rssi    = info->rx_ctrl->rssi;
-        s_link_channel = info->rx_ctrl->channel;
+        g_espnow_rssi    = info->rx_ctrl->rssi;
+        g_espnow_channel = info->rx_ctrl->channel;
     }
 
     if (len == (int)sizeof(master_beacon_t)) {
