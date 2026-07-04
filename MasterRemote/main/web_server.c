@@ -504,7 +504,7 @@ static esp_err_t h_status(httpd_req_t *req)
         !gpio_get_level(PIN_HONDA_START)        ? "true" : "false",
          gpio_get_level(PIN_HONDA_MANUAL_START) ? "true" : "false",
         !gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",   /* inverted on this hardware */
-        !gpio_get_level(PIN_WALLAS_MANUAL_START)? "true" : "false",   /* inverted on this hardware, reconnected 2026-07-04 */
+         gpio_get_level(PIN_WALLAS_MANUAL_START)? "true" : "false",   /* non-inverted like PIN_HONDA_MANUAL_START, reconnected 2026-07-04 */
          gpio_get_level(PIN_HONDA_STARTED_FB)   ? "true" : "false",
         g_honda_start_cmd    ? "true" : "false",
         g_slave_honda_running? "true" : "false",
@@ -622,10 +622,10 @@ static esp_err_t h_wallas_start(httpd_req_t *req)
 static esp_err_t h_wallas_stop(httpd_req_t *req)
 {
     g_web_wallas_start = false;
-    /* PIN_WALLAS_START and PIN_WALLAS_MANUAL_START both read inverted on this
-     * hardware -- see main.c gpio_init()/isr_wallas_recompute. */
+    /* PIN_WALLAS_START reads inverted, PIN_WALLAS_MANUAL_START non-inverted
+     * on this hardware -- see main.c gpio_init()/isr_wallas_recompute. */
     g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_START) ||
-                          !gpio_get_level(PIN_WALLAS_MANUAL_START) ||
+                          gpio_get_level(PIN_WALLAS_MANUAL_START) ||
                           g_timer_wallas_start;
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
