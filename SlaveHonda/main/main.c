@@ -104,8 +104,8 @@ volatile int64_t  g_wifi_last_disc_ts_us  = 0;   /* 0 = never disconnected since
          int64_t  g_heap_min_ts_us = 0;
 
 /* ── Master discovery state ─────────────────────────────────────────────────── */
-static uint8_t s_master_mac[6]  = {0};
-static bool    s_master_known   = false;
+uint8_t          g_master_mac[6] = {0};   /* exposed to web_server.c */
+volatile bool    g_master_known  = false;
 volatile int8_t  g_espnow_rssi    = 0;   /* last frame heard from MasterRemote -- exposed to web_server.c */
 volatile uint8_t g_espnow_channel = 0;
 static int64_t s_master_last_seen_us = 0;
@@ -382,7 +382,7 @@ static void espnow_add_peer(const uint8_t *mac) {
 }
 
 static void send_status(void) {
-    if (!s_master_known) return;   /* Master not discovered yet — nothing to send to */
+    if (!g_master_known) return;   /* Master not discovered yet — nothing to send to */
     /* Do NOT touch g_honda_running here -- it's owned by honda_start()/honda_stop()
      * now that PIN_RUNNING_FB is unwired (see its #define above). This function used
      * to force it false on every 10 s heartbeat, which stomped a just-completed
@@ -400,7 +400,7 @@ static void send_status(void) {
     msg.channel          = g_espnow_channel;
     strlcpy(msg.fw_version, FIRMWARE_VERSION, sizeof(msg.fw_version));
     get_ip_str(msg.ip, sizeof(msg.ip));
-    esp_now_send(s_master_mac, (uint8_t *)&msg, sizeof(msg));
+    esp_now_send(g_master_mac, (uint8_t *)&msg, sizeof(msg));
 }
 
 static void espnow_send_cb(const esp_now_send_info_t *tx_info, esp_now_send_status_t st) {}
@@ -418,12 +418,12 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         memcpy(&beacon, data, sizeof(beacon));
         if (strncmp(beacon.label, "MasterRemote", 12) != 0) return;
 
-        bool is_current_master = s_master_known && memcmp(info->src_addr, s_master_mac, 6) == 0;
+        bool is_current_master = g_master_known && memcmp(info->src_addr, g_master_mac, 6) == 0;
         if (is_current_master) {
             s_master_last_seen_us = esp_timer_get_time();
             return;
         }
-        bool master_stale = !s_master_known ||
+        bool master_stale = !g_master_known ||
             (esp_timer_get_time() - s_master_last_seen_us) > MASTER_STALE_US;
         if (!master_stale) {
             /* A different MAC is claiming to be MasterRemote while our current
@@ -433,16 +433,16 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
                      MAC2STR(info->src_addr));
             return;
         }
-        memcpy(s_master_mac, info->src_addr, 6);
-        espnow_add_peer(s_master_mac);
-        s_master_known = true;
+        memcpy(g_master_mac, info->src_addr, 6);
+        espnow_add_peer(g_master_mac);
+        g_master_known = true;
         s_master_last_seen_us = esp_timer_get_time();
-        ESP_LOGI(TAG, "Master found: " MACSTR, MAC2STR(s_master_mac));
+        ESP_LOGI(TAG, "Master found: " MACSTR, MAC2STR(g_master_mac));
         send_status();   /* immediate registration heartbeat */
         return;
     }
     if (len != (int)sizeof(master_msg_t)) return;
-    if (!s_master_known || memcmp(info->src_addr, s_master_mac, 6) != 0) {
+    if (!g_master_known || memcmp(info->src_addr, g_master_mac, 6) != 0) {
         ESP_LOGW(TAG, "Ignoring command from unrecognized sender " MACSTR, MAC2STR(info->src_addr));
         return;   /* not from the registered Master -- ignore */
     }
@@ -484,11 +484,11 @@ static void espnow_channel_scan(void) {
         for (uint8_t ch = 1; ch <= SCAN_CHANNEL_COUNT; ch++) {
             esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
             int64_t start = esp_timer_get_time();
-            while (!s_master_known &&
+            while (!g_master_known &&
                    (esp_timer_get_time() - start) < (int64_t)SCAN_DWELL_MS * 1000) {
                 vTaskDelay(pdMS_TO_TICKS(50));
             }
-            if (s_master_known) {
+            if (g_master_known) {
                 ESP_LOGI(TAG, "Locked to channel %d", ch);
                 return;
             }

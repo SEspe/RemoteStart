@@ -162,7 +162,7 @@ static const char INDEX_HTML[] =
 "<div class='card'><h3>Peers</h3><div class='tbl' id='peers'>&#8230;</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
-"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>&#8230;</div></div>"
+"<div class='card'><h3>Radio Link</h3><div class='grid' id='wifi'>&#8230;</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>&#8230;</div></div>"
 "</div>"
 "<div id='wifinet' class='pane'>"
@@ -234,8 +234,13 @@ static const char INDEX_HTML[] =
 "<td>'+(x.mac?x.rssi+' dBm':'\\u2014')+'</td><td>'+x.ls+'</td></tr>';});"
 "p+='</table>';"
 "document.getElementById('peers').innerHTML=p;"
+"function peerSum(x){return x&&x.mac?x.rssi+' dBm \\u2014 '+x.mac:'not discovered';}"
 "document.getElementById('wifi').innerHTML="
-"txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('Channel',d.ch||'\\u2014');"
+"txtRow('Own MAC',d.mac||'\\u2014')+"
+"txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('WiFi Channel',d.ch||'\\u2014')+"
+"txtRow('ESP-NOW: MasterRemote',peerSum(d.peers[0]))+"
+"txtRow('ESP-NOW: SlaveHonda',peerSum(d.peers[1]))+"
+"txtRow('ESP-NOW: SlaveWallas',peerSum(d.peers[2]));"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "function fetchSys(){"
@@ -374,6 +379,12 @@ static esp_err_t h_status(httpd_req_t *req)
     wifi_ap_record_t ap_info = {0};
     esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not associated */
 
+    uint8_t own_mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, own_mac);
+    char mac_str[20];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             own_mac[0], own_mac[1], own_mac[2], own_mac[3], own_mac[4], own_mac[5]);
+
     /* Static: single httpd worker, and ~1.3 KB is unfriendly to the stack. */
     static char buf[1600];
     int n = snprintf(buf, sizeof(buf), "{\"traffic\":[");
@@ -406,8 +417,8 @@ static esp_err_t h_status(httpd_req_t *req)
             i ? "," : "", PEER_NAMES[i], mac, (int)peers[i]->rssi, ls);
     }
 
-    snprintf(buf + n, sizeof(buf) - n, "],\"rssi\":%d,\"ch\":%d}",
-             (int)ap_info.rssi, (int)ap_info.primary);
+    snprintf(buf + n, sizeof(buf) - n, "],\"rssi\":%d,\"ch\":%d,\"mac\":\"%s\"}",
+             (int)ap_info.rssi, (int)ap_info.primary, mac_str);
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);

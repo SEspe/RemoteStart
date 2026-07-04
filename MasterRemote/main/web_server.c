@@ -340,6 +340,7 @@ static const char INDEX_HTML_TMPL[] =
 "document.getElementById('state').innerHTML="
 "row('Honda Start CMD',d.gHS)+row('Honda Slave Running',d.gHR)+row('Wallas CMD',d.gWS);"
 "document.getElementById('wifi').innerHTML="
+"txtRow('Own MAC',d.mac||'\\u2014')+"
 "txtRow('Signal strength',d.rssi+' dBm')+txtRow('Channel',d.ch);"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
@@ -488,10 +489,16 @@ static esp_err_t h_status(httpd_req_t *req)
     wifi_ap_record_t ap_info = {0};
     esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not connected */
 
-    char buf[320];
+    uint8_t own_mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, own_mac);
+    char mac_str[20];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             own_mac[0], own_mac[1], own_mac[2], own_mac[3], own_mac[4], own_mac[5]);
+
+    char buf[360];
     snprintf(buf, sizeof(buf),
         "{\"pHS\":%s,\"pHM\":%s,\"pWS\":%s,\"pWM\":%s,\"pFB\":%s,"
-        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"rssi\":%d,\"ch\":%d}",
+        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"rssi\":%d,\"ch\":%d,\"mac\":\"%s\"}",
         !gpio_get_level(PIN_HONDA_START)        ? "true" : "false",
          gpio_get_level(PIN_HONDA_MANUAL_START) ? "true" : "false",
         !gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",   /* inverted on this hardware */
@@ -500,7 +507,7 @@ static esp_err_t h_status(httpd_req_t *req)
         g_honda_start_cmd    ? "true" : "false",
         g_slave_honda_running? "true" : "false",
         g_wallas_start_cmd   ? "true" : "false",
-        (int)ap_info.rssi, (int)ap_info.primary);
+        (int)ap_info.rssi, (int)ap_info.primary, mac_str);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;

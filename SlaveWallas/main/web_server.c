@@ -35,6 +35,8 @@ extern          uint32_t g_heap_min;
 extern          int64_t  g_heap_min_ts_us;
 extern volatile int8_t   g_espnow_rssi;
 extern volatile uint8_t  g_espnow_channel;
+extern          uint8_t  g_master_mac[6];
+extern volatile bool     g_master_known;
 
 extern bool              g_ipcfg_static;
 extern char              g_ipcfg_ip[16];
@@ -253,8 +255,10 @@ static const char INDEX_HTML[] =
 "row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
 "row('Wallas Running FB (p18)',d.run)+row('Heater Indicator LED (p23)',d.led);"
 "document.getElementById('wifi').innerHTML="
+"txtRow('Own MAC',d.mac||'\\u2014')+"
 "txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('WiFi Channel',d.ch||'\\u2014')+"
-"txtRow('ESP-NOW RSSI (from Master)',d.enRssi?d.enRssi+' dBm':'\\u2014')+txtRow('ESP-NOW Channel',d.enCh||'\\u2014');"
+"txtRow('ESP-NOW RSSI (from Master)',d.enRssi?d.enRssi+' dBm':'\\u2014')+txtRow('ESP-NOW Channel',d.enCh||'\\u2014')+"
+"txtRow('Master MAC',d.masterMac||'not discovered');"
 "document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
 "}).catch(()=>{});}"
 "var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
@@ -384,14 +388,30 @@ static esp_err_t h_status(httpd_req_t *req)
     esp_wifi_sta_get_ap_info(&ap_info);   /* leaves rssi/primary at 0 if not associated */
 
     g_wallas_running = gpio_get_level(PIN_WALLAS_FB);
-    char buf[224];
-    snprintf(buf, sizeof(buf), "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s,\"rssi\":%d,\"ch\":%d,\"enRssi\":%d,\"enCh\":%d}",
+
+    uint8_t own_mac[6] = {0};
+    esp_wifi_get_mac(WIFI_IF_STA, own_mac);
+    char mac_str[20];
+    snprintf(mac_str, sizeof(mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+             own_mac[0], own_mac[1], own_mac[2], own_mac[3], own_mac[4], own_mac[5]);
+
+    char master_mac_str[20] = "";
+    if (g_master_known)
+        snprintf(master_mac_str, sizeof(master_mac_str), "%02X:%02X:%02X:%02X:%02X:%02X",
+                 g_master_mac[0], g_master_mac[1], g_master_mac[2],
+                 g_master_mac[3], g_master_mac[4], g_master_mac[5]);
+
+    char buf[288];
+    snprintf(buf, sizeof(buf),
+        "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s,\"rssi\":%d,\"ch\":%d,\"enRssi\":%d,\"enCh\":%d,"
+        "\"mac\":\"%s\",\"masterMac\":\"%s\"}",
         g_start_cmd                         ? "true":"false",
         gpio_get_level(PIN_WALLAS_RELAY)    ? "true":"false",
         g_wallas_running                    ? "true":"false",
         gpio_get_level(PIN_HEATER_LED)      ? "true":"false",
         (int)ap_info.rssi, (int)ap_info.primary,
-        (int)g_espnow_rssi, (int)g_espnow_channel);
+        (int)g_espnow_rssi, (int)g_espnow_channel,
+        mac_str, master_mac_str);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
