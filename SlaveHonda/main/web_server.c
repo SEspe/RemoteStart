@@ -1,7 +1,7 @@
 /*
  * SlaveHonda web_server.c
  * Serves: WiFi setup portal, pin status API, debug GPIO test, OTA upload.
- * Three-tab UI: Status | Debug GPIO | OTA Update
+ * Four-tab UI: Status | Debug | WiFi | OTA Update
  */
 
 #include <stdio.h>
@@ -166,15 +166,15 @@ static const char INDEX_HTML[] =
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Status</button>"
-"<button class='tab' onclick='show(\"debug\",this)'>Debug GPIO</button>"
+"<button class='tab' onclick='show(\"debug\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"wifinet\",this)'>WiFi</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>Honda Generator</h3><div class='grid' id='pins'>…</div></div>"
-"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
+"<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
 "<div class='card'><h3>Manual GPIO Test</h3>"
 "<p class='warn'>Hardware bring-up only. Every GPIO's live level is shown as a "
@@ -232,6 +232,7 @@ static const char INDEX_HTML[] =
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
+"if(id==='debug'){fetchStatus();fetchDbg();fetchSys();}"
 "if(id==='wifinet')fetchIpCfg();}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
@@ -338,8 +339,10 @@ static const char INDEX_HTML[] =
 "xhr.onerror=()=>{p.textContent='Upload error';};"
 "xhr.send(f);}"
 "setInterval(()=>{"
-"if(document.getElementById('status').classList.contains('on'))fetchStatus();"
-"if(document.getElementById('debug').classList.contains('on')){fetchDbg();fetchSys();}"
+"var stOn=document.getElementById('status').classList.contains('on');"
+"var dbOn=document.getElementById('debug').classList.contains('on');"
+"if(stOn||dbOn)fetchStatus();"
+"if(dbOn){fetchDbg();fetchSys();}"
 "},2000);"
 "fetchStatus();"
 "buildDbg();"

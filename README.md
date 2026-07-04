@@ -6,10 +6,10 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 
 | Unit         | MCU      | Purpose                                   | Web UI tabs |
 |--------------|----------|--------------------------------------------|-------------|
-| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Nodes, Weekly Timer, WiFi, OTA Update |
-| SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, Debug GPIO, WiFi, OTA Update |
-| SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug GPIO, WiFi, OTA Update |
-| ESPNowRelay  | ESP32-C6 | Optional ESP-NOW store-and-forward repeater (see FSD §13) | Status (traffic/peers), WiFi, OTA Update |
+| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Debug, Nodes, Weekly Timer, WiFi, OTA Update |
+| SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, Debug, WiFi, OTA Update |
+| SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug, WiFi, OTA Update |
+| ESPNowRelay  | ESP32-C6 | Optional ESP-NOW store-and-forward repeater (see FSD §13) | Status (traffic/peers), Debug, WiFi, OTA Update |
 
 ## Framework
 
@@ -30,6 +30,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **System resource monitor** — free heap, heap low-water mark, uptime, and WiFi reconnect count on every unit's own web UI (`/api/sysinfo`), for catching a slow resource leak before it causes an outage (see FSD §10)
 - **WiFi power save disabled, max TX power** — all three units run with `WIFI_PS_NONE` and max TX power instead of ESP-IDF's default modem-sleep, since the DTIM-interval wake latency that power save trades for battery life meaningfully hurts HTTP responsiveness at marginal signal strength, and these units aren't battery-constrained (see FSD §10, v1.32)
 - **WiFi tab (DHCP or static IP)** — every unit's web UI now has an always-accessible WiFi tab: change SSID/password without reopening the config portal, and optionally switch from DHCP to a static IP/subnet/gateway/DNS (switching to Static pre-fills the current live values as a starting suggestion). Defaults to DHCP; saving either setting reboots the unit to apply. The tab also has a manual **Reboot Now** button (see FSD §4, v1.37/v1.38)
+- **Standardized Debug tab** — every unit now has a Debug tab (renamed from "Debug GPIO" on the slaves, newly added on MasterRemote/ESPNowRelay) holding the WiFi Link (RSSI/channel) and System resource monitor cards, keeping the Status tab focused on operational state only (see FSD §6.1/§6.2/§13, v1.40)
 
 ## First Startup
 

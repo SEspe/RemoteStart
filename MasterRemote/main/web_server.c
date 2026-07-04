@@ -1,7 +1,7 @@
 /*
  * MasterRemote web_server.c
  * Serves: WiFi setup portal, pin status API, nodes API, weekly timer API, OTA upload.
- * Four-tab UI: Pin Status | Nodes | Weekly Timer | OTA Update
+ * Six-tab UI: Pin Status | Debug | Nodes | Weekly Timer | WiFi | OTA Update
  */
 
 #include <stdio.h>
@@ -205,6 +205,7 @@ static const char INDEX_HTML_TMPL[] =
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Pin Status</button>"
+"<button class='tab' onclick='show(\"debug\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"nodes\",this)'>Nodes</button>"
 "<button class='tab' onclick='show(\"timer\",this)'>Weekly Timer</button>"
 "<button class='tab' onclick='show(\"wifinet\",this)'>WiFi</button>"
@@ -221,9 +222,11 @@ static const char INDEX_HTML_TMPL[] =
 "<button class='go go-on' onclick='cmd(\"wallas\",\"start\")'>Start Wallas</button>"
 "<button class='go go-off' onclick='cmd(\"wallas\",\"stop\")'>Stop Wallas</button>"
 "</div></div>"
+"<div class='ts' id='sts'></div></div>"
+"<div id='debug' class='pane'>"
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
-"<div class='ts' id='sts'></div></div>"
+"</div>"
 "<div id='nodes' class='pane'>"
 "<div class='tbl-wrap' id='cli'>…</div><div class='ts' id='cts'></div></div>"
 "<div id='timer' class='pane'>"
@@ -282,6 +285,7 @@ static const char INDEX_HTML_TMPL[] =
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
 "if(id==='timer')fetchTimer();"
+"if(id==='debug'){fetchStatus();fetchSys();}"
 "if(id==='wifinet')fetchIpCfg();}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
@@ -426,7 +430,10 @@ static const char INDEX_HTML_TMPL[] =
 "document.getElementById('rebootSts').textContent='Rebooting\\u2026';"
 "fetch('/api/reboot',{method:'POST'}).catch(()=>{});}"
 "setInterval(()=>{"
-"if(document.getElementById('status').classList.contains('on')){fetchStatus();fetchSys();}"
+"var stOn=document.getElementById('status').classList.contains('on');"
+"var dbOn=document.getElementById('debug').classList.contains('on');"
+"if(stOn||dbOn)fetchStatus();"
+"if(dbOn)fetchSys();"
 "if(document.getElementById('nodes').classList.contains('on'))fetchNodes();"
 "},2000);"
 "fetchStatus();"

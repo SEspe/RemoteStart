@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.39  
+**Version:** 1.40  
 **Author:** SEspe  
-**Date:** 2026-07-03  
+**Date:** 2026-07-04  
 **Changelog:**
+- v1.40 — **Standardized the tab bar across all four units: Status | Debug | *(unit-specific tabs)* | WiFi | OTA Update.** Previously MasterRemote and ESPNowRelay had no Debug tab at all (their WiFi Link + System cards sat directly on the Status tab), and SlaveHonda/SlaveWallas's existing tab was labeled "Debug GPIO" even though it also held the System resource monitor, not just the GPIO test tool. Renamed "Debug GPIO" → **Debug** on both slaves, and added a new **Debug** tab to MasterRemote (inserted after Pin Status) and ESPNowRelay (inserted after Status). On all four units, the **WiFi Link** card (AP RSSI + channel) and **System** card (heap/uptime/reconnects, §10.1) now live on the Debug tab, not Status — Status/Pin Status keeps only the operational data (relay/pin states, node roster controls, traffic/peer tables). Purely a UI reorganization: no endpoint, JSON, or NVS changes. Each unit's polling loop was updated so the WiFi Link/System cards still refresh every 2 s while the Debug tab is open (previously that refresh was gated on the Status tab being active). MasterRemote 1.6.3, SlaveHonda 1.4.3, SlaveWallas 1.6.3, ESPNowRelay 1.1.3.
 - v1.39 — Added a **Last WiFi Reconnect** field next to the existing WiFi Reconnects counter on `/api/sysinfo`'s System card, all four units. Motivated by a user report of 12 reconnects across all four units in 20 hours — the existing counter alone couldn't distinguish a synchronized, shared router/AP-side disruption (all units dropping within the same few seconds — points at the router: a power blip, scheduled reboot, DHCP renewal, or channel interference) from independent per-unit RF flakiness (each unit's own marginal signal, unrelated timing). New `g_wifi_last_disc_ts_us` (`esp_timer_get_time()` at the moment of each `WIFI_EVENT_STA_DISCONNECTED`) is set alongside the existing counter incrementing; `/api/sysinfo` gains `wifiDiscAgo` (seconds since, or `-1` if none since boot). Querying all four units within a few seconds of each other and comparing this field settles the question directly. MasterRemote 1.6.2, SlaveHonda 1.4.2, SlaveWallas 1.6.2, ESPNowRelay 1.1.2; additive JSON change only.
 - v1.38 — Two follow-ups to the v1.37 WiFi tab, on all four units. (1) Selecting **Static IP** now pre-fills any empty IP/subnet mask/gateway field with the unit's currently-active (live, DHCP-assigned) values as a starting suggestion, instead of leaving them blank — the JS `ipModeChange()` handler only fills a field if it's currently empty, so it never clobbers a value already saved or typed. (2) Added a **Device** card to the WiFi tab with a **Reboot Now** button (`confirm()` dialog, then `POST /api/reboot`) — previously the only way to reboot a unit outside an OTA upload or config-portal save was a physical power cycle or USB reset. MasterRemote 1.6.1, SlaveHonda 1.4.1, SlaveWallas 1.6.1, ESPNowRelay 1.1.1; additive JS/API change only.
 - v1.37 — **New always-accessible WiFi tab (all four units) with DHCP/static IP selection.** Previously, WiFi network (SSID/password) settings were only reachable via the first-boot `/wifi-setup` config portal — the route stayed registered during normal operation too, but nothing ever consumed a save submitted outside the portal's own blocking wait loop, so changing credentials from an already-running unit silently did nothing. Fixed as part of this change: a new `config_apply_task` (spawned in `app_main` on all four units) watches `g_wifi_save_requested`/`g_ipcfg_save_requested` for the life of the device and persists + reboots on either, so the web UI's WiFi tab is now genuinely functional at any time, not just during initial setup. The new **WiFi** tab (added to every unit's tab bar, alongside Status/Debug/Nodes/etc.) has two cards: **WiFi Network** (unchanged SSID/password form + scan, now embedded directly in the dashboard instead of only the standalone portal page) and **IP Configuration** — a DHCP/Static IP radio (DHCP is the default and unchanged behavior), with IP address/subnet mask/gateway/DNS fields shown only in Static mode. Saving either card reboots the unit to apply. Backend: new NVS keys `ipmode`/`ip`/`mask`/`gw`/`dns` (same `NVS_NAMESPACE` as WiFi credentials — erasing NVS to reset WiFi credentials, §4, also resets IP config back to DHCP); `apply_static_ip()` in `main.c` calls `esp_netif_dhcpc_stop()` + `esp_netif_set_ip_info()` (+ `esp_netif_set_dns_info()` if a DNS server is set) on the STA netif before `esp_wifi_start()`, applied only when a saved static IP/mask are both present and pass `esp_netif_str_to_ip4()` validation — an invalid saved config silently falls back to DHCP rather than leaving the unit unreachable. New endpoints `GET /api/ipconfig` (saved config + the currently-active IP/mask/gateway) and `POST /api/ipconfig/save` (mode/ip/mask/gw/dns, server-side IPv4 syntax validation before accepting — a syntactically-parseable-but-wrong static IP would otherwise still let the unit associate to the AP, just leaving it unreachable over IP, indistinguishable from a hang). **Caveat:** a wrong-but-valid-looking static IP (e.g. outside the actual LAN's subnet) is not detected by this validation and requires the same USB/NVS-erase recovery as a lost WiFi password (§4/§10). MasterRemote 1.6.0, SlaveHonda 1.4.0, SlaveWallas 1.6.0, ESPNowRelay 1.1.0; additive JSON/NVS change, no wire-format (ESP-NOW) change.
@@ -354,13 +355,14 @@ Both `app0` and `app1` are 1.875 MB, sufficient for the firmware including embed
 
 All HTML is embedded as `const char[]` string literals in `web_server.c`. No filesystem (SPIFFS/LittleFS) is required.
 
-### 6.1 MasterRemote — Four Tabs
+### 6.1 MasterRemote — Six Tabs
 
 Access at: `http://<MasterRemote-IP>/`
 
 | Tab          | Content                                                      | Refresh  |
 |--------------|--------------------------------------------------------------|----------|
-| Pin Status   | Live state of 5 pins + 3 global state flags + WiFi link (RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
+| Pin Status   | Live state of 5 pins + 3 global state flags + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
+| Debug (v1.40) | WiFi Link (RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) | 2 s auto |
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
 | WiFi (v1.37) | WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open |
@@ -410,8 +412,8 @@ Access at: `http://<Slave-IP>/`
 
 | Tab        | Content                                               | Refresh  | Units |
 |------------|--------------------------------------------------------|----------|-------|
-| Status     | Relay states, running feedback, last received command, WiFi Link (AP RSSI + channel, v1.33), plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
-| Debug GPIO | System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
+| Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
+| Debug (v1.40, renamed from "Debug GPIO") | WiFi Link (AP RSSI + channel, v1.33) + System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
 | WiFi (v1.37) | WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open | Both |
 | OTA Update | File input + XHR upload to `/ota/upload`              | Manual   | Both  |
 
@@ -426,7 +428,7 @@ HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), 
 
 > **SlaveHonda in ESP-NOW fallback (§3.2):** the unit has no IP address while WiFi-less, so its own web UI (and OTA) is unreachable in that state. Its status is only visible remotely via MasterRemote's Nodes tab (§6.1). To OTA-update SlaveHonda, it must be within WiFi range at boot (or reachable via the config portal) at least once.
 
-> **Debug GPIO (SlaveWallas only, §11):** `/api/gpio/set` unconditionally calls `gpio_reset_pin()` + `gpio_set_direction(OUTPUT)` + `gpio_set_level()` on whatever pin number is given, for physically verifying wiring when pin assignments are uncertain. It has no awareness of what a pin is normally used for — toggling GPIO19 (relay), GPIO18 (feedback input), GPIO2, or GPIO23 (LEDs) here overrides the unit's normal control of that pin until the next reboot. Not gated behind any confirmation; intended for hardware bring-up sessions only, not left exposed in a production deployment.
+> **Debug tab GPIO test (SlaveWallas only, §11):** `/api/gpio/set` unconditionally calls `gpio_reset_pin()` + `gpio_set_direction(OUTPUT)` + `gpio_set_level()` on whatever pin number is given, for physically verifying wiring when pin assignments are uncertain. It has no awareness of what a pin is normally used for — toggling GPIO19 (relay), GPIO18 (feedback input), GPIO2, or GPIO23 (LEDs) here overrides the unit's normal control of that pin until the next reboot. Not gated behind any confirmation; intended for hardware bring-up sessions only, not left exposed in a production deployment.
 
 ### 6.3 Status JSON format
 
@@ -599,7 +601,7 @@ app_main()
 
 ### 10.1 System Resource Monitor (`/api/sysinfo`, v1.25, `heapMinAgo` added v1.26)
 
-All three units expose `GET /api/sysinfo` and surface it as a **System** card in the web UI (Debug GPIO tab on SlaveHonda/SlaveWallas; Pin Status tab on MasterRemote, which has no Debug GPIO tab). It returns:
+All four units expose `GET /api/sysinfo` and surface it as a **System** card on the **Debug** tab (v1.40 — previously "Debug GPIO" on SlaveHonda/SlaveWallas only; MasterRemote and ESPNowRelay showed it on their Status tab since neither had a Debug tab before v1.40). It returns:
 
 | Field        | Source                                          | What it means                                                                 |
 |--------------|---------------------------------------------------|---------------------------------------------------------------------------------|
@@ -693,8 +695,9 @@ Because ESP-NOW unicast is only delivered to the addressed MAC, the relay never 
 
 - **Pins:** GPIO2 onboard LED only — fast blink = traffic forwarded within the last 10 s, slow = idle/standby. No relays or inputs.
 - **WiFi:** preferred (web UI/OTA/channel derivation); with saved credentials but no reachable router it falls back to the SlaveHonda-style ESP-NOW channel scan (§3.2) and relays without an IP (no web UI in that state). First boot with no credentials opens the `ESPNowRelay-Config` portal.
-- **Web UI** (`http://<relay-ip>/`), three tabs (WiFi tab added v1.37):
-  - **Status** — *ESP-NOW Traffic* table (per class: Rx count, forwarded, failed, last sender MAC, last forward destination MAC, RSSI of last frame, last seen), *Peers* table (MasterRemote / SlaveHonda / SlaveWallas: MAC, RSSI, last seen), *WiFi Link* card (AP RSSI + channel), *System* card (§10.1). 2 s auto-refresh.
+- **Web UI** (`http://<relay-ip>/`), four tabs (WiFi tab added v1.37, Debug tab added v1.40):
+  - **Status** — *ESP-NOW Traffic* table (per class: Rx count, forwarded, failed, last sender MAC, last forward destination MAC, RSSI of last frame, last seen), *Peers* table (MasterRemote / SlaveHonda / SlaveWallas: MAC, RSSI, last seen). 2 s auto-refresh.
+  - **Debug** — *WiFi Link* card (AP RSSI + channel) + *System* card (§10.1). 2 s auto-refresh while open.
   - **WiFi** — WiFi Network card (SSID/password form + scan) + IP Configuration card (DHCP/Static IP radio, IP/mask/gateway/DNS fields), same as the other three units (§4/§6.1/§6.2).
   - **OTA Update** — same as all other units.
 - **HTTP endpoints:** `/`, `/api/status`, `/api/sysinfo`, `/wifi-setup`, `/wifi-save`, `/api/scan`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/ota/upload`.

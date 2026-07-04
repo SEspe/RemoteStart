@@ -1,7 +1,7 @@
 /*
  * ESPNowRelay web_server.c
  * Serves: WiFi setup portal, relay traffic/peer status API, OTA upload.
- * Two-tab UI: Status | OTA Update
+ * Four-tab UI: Status | Debug | WiFi | OTA Update
  */
 
 #include <stdio.h>
@@ -153,15 +153,18 @@ static const char INDEX_HTML[] =
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Status</button>"
+"<button class='tab' onclick='show(\"debug\",this)'>Debug</button>"
 "<button class='tab' onclick='show(\"wifinet\",this)'>WiFi</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
 "<div class='card'><h3>ESP-NOW Traffic</h3><div class='tbl' id='traffic'>&#8230;</div></div>"
 "<div class='card'><h3>Peers</h3><div class='tbl' id='peers'>&#8230;</div></div>"
+"<div class='ts' id='sts'></div></div>"
+"<div id='debug' class='pane'>"
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>&#8230;</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>&#8230;</div></div>"
-"<div class='ts' id='sts'></div></div>"
+"</div>"
 "<div id='wifinet' class='pane'>"
 "<div class='card'><h3>WiFi Network</h3>"
 "<div class='wf-sts' id='wfSts'></div>"
@@ -211,6 +214,7 @@ static const char INDEX_HTML[] =
 "document.querySelectorAll('.pane').forEach(e=>e.classList.remove('on'));"
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
+"if(id==='debug'){fetchStatus();fetchSys();}"
 "if(id==='wifinet')fetchIpCfg();}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
 "function fmtKB(n){return Math.round(n/1024)+' KB';}"
@@ -305,7 +309,10 @@ static const char INDEX_HTML[] =
 "document.getElementById('rebootSts').textContent='Rebooting\\u2026';"
 "fetch('/api/reboot',{method:'POST'}).catch(()=>{});}"
 "setInterval(()=>{"
-"if(document.getElementById('status').classList.contains('on')){fetchStatus();fetchSys();}"
+"var stOn=document.getElementById('status').classList.contains('on');"
+"var dbOn=document.getElementById('debug').classList.contains('on');"
+"if(stOn||dbOn)fetchStatus();"
+"if(dbOn)fetchSys();"
 "},2000);"
 "fetchStatus();"
 "fetchSys();"
