@@ -14,6 +14,7 @@ idf_component_register(
         app_update
         esp_http_client
         esp_https_ota
+        esp-tls
         cjson
         mbedtls
         log

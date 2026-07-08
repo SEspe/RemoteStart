@@ -21,6 +21,7 @@
 #include "esp_http_client.h"
 #include "esp_https_ota.h"
 #include "esp_crt_bundle.h"
+#include "esp_tls.h"
 #include "cJSON.h"
 
 #include "version.h"
@@ -69,6 +70,51 @@ static volatile int     g_gh_ota_percent = 0;
 static volatile int64_t g_gh_ota_total   = 0;
 static char             g_gh_ota_url[256] = "";
 static char             g_gh_ota_err[128] = "";
+static char             g_gh_ota_trace[600] = "";   /* HTTP event trace, for diagnosing install
+                                                        failures without needing USB/serial access */
+
+/* Traces low-level esp_http_client events during gh_ota_task's download --
+ * exposed via /api/ota/github/progress. This is how the GitHub redirect
+ * buffer-overflow bug (buffer_size_tx too small for the ~2KB signed
+ * redirect target) was diagnosed and fixed without USB access. */
+static esp_err_t gh_http_event_handler(esp_http_client_event_t *evt)
+{
+    size_t len = strlen(g_gh_ota_trace);
+    if (len >= sizeof(g_gh_ota_trace) - 60) return ESP_OK;
+    switch (evt->event_id) {
+        case HTTP_EVENT_ERROR: {
+            esp_tls_error_handle_t eh = (esp_tls_error_handle_t)evt->data;
+            if (eh) {
+                snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len,
+                         "|ERR(le=%d,tlsc=%d,flags=%d)",
+                         (int)eh->last_error, eh->esp_tls_error_code, eh->esp_tls_flags);
+            } else {
+                snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|ERR(noeh)");
+            }
+            break;
+        }
+        case HTTP_EVENT_ON_CONNECTED:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|CONN"); break;
+        case HTTP_EVENT_HEADERS_SENT:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|SENT"); break;
+        case HTTP_EVENT_ON_HEADERS_COMPLETE:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len,
+                     "|HDRDONE(st=%d)", esp_http_client_get_status_code(evt->client));
+            break;
+        case HTTP_EVENT_ON_HEADER:
+            if (evt->header_key && strcasecmp(evt->header_key, "Location") == 0)
+                snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|LOC=%.50s", evt->header_value);
+            break;
+        case HTTP_EVENT_ON_DATA:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|DATA=%d", evt->data_len); break;
+        case HTTP_EVENT_ON_FINISH:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|FIN"); break;
+        case HTTP_EVENT_DISCONNECTED:
+            snprintf(g_gh_ota_trace + len, sizeof(g_gh_ota_trace) - len, "|DISC"); break;
+        default: break;
+    }
+    return ESP_OK;
+}
 
 /* ── HTML ────────────────────────────────────────────────────────────────────── */
 static const char WIFI_SETUP_HTML[] =
@@ -729,11 +775,22 @@ static esp_err_t h_ota_gh_releases(httpd_req_t *req)
 static void gh_ota_task(void *arg)
 {
     (void)arg;
+    g_gh_ota_trace[0] = '\0';
     esp_http_client_config_t http_cfg = {
         .url = g_gh_ota_url,
         .crt_bundle_attach = esp_crt_bundle_attach,
         .timeout_ms = 15000,
-        .keep_alive_enable = true,
+        /* GitHub's release-asset redirect target is a signed URL (JWT query
+         * params) around 2 KB long. esp_http_client builds the outgoing
+         * "GET <path>?<query> HTTP/1.1" request line into buffer_size_tx
+         * (defaults to 512 bytes, independent of buffer_size which is RX
+         * only) -- too small for that redirected request line, so it fails
+         * silently with "Out of buffer" (visible only via serial log) and
+         * esp_https_ota_begin() surfaces it as a generic ESP_FAIL with no
+         * TLS error detail. Both buffers need to be large enough. */
+        .buffer_size    = 4096,
+        .buffer_size_tx = 4096,
+        .event_handler  = gh_http_event_handler,
     };
     esp_https_ota_config_t ota_cfg = { .http_config = &http_cfg };
 
@@ -741,7 +798,8 @@ static void gh_ota_task(void *arg)
     esp_err_t err = esp_https_ota_begin(&ota_cfg, &handle);
     if (err != ESP_OK) {
         g_gh_ota_state = GH_OTA_ERROR;
-        strlcpy(g_gh_ota_err, esp_err_to_name(err), sizeof(g_gh_ota_err));
+        snprintf(g_gh_ota_err, sizeof(g_gh_ota_err), "begin:%s", esp_err_to_name(err));
+        ESP_LOGE(TAG, "GitHub OTA begin failed: %s (url=%s)", esp_err_to_name(err), g_gh_ota_url);
         vTaskDelete(NULL);
         return;
     }
@@ -756,9 +814,12 @@ static void gh_ota_task(void *arg)
     } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
 
     esp_err_t finish_err = ESP_FAIL;
-    if (err == ESP_OK && esp_https_ota_is_complete_data_received(handle)) {
+    bool complete = esp_https_ota_is_complete_data_received(handle);
+    if (err == ESP_OK && complete) {
         finish_err = esp_https_ota_finish(handle);
     } else {
+        ESP_LOGE(TAG, "GitHub OTA perform failed: perform=%s complete=%d",
+                 esp_err_to_name(err), (int)complete);
         esp_https_ota_abort(handle);
     }
 
@@ -770,7 +831,9 @@ static void gh_ota_task(void *arg)
         esp_restart();
     } else {
         g_gh_ota_state = GH_OTA_ERROR;
-        strlcpy(g_gh_ota_err, esp_err_to_name(err == ESP_OK ? finish_err : err), sizeof(g_gh_ota_err));
+        snprintf(g_gh_ota_err, sizeof(g_gh_ota_err), "%s:%s",
+                 err == ESP_OK ? "finish" : "perform",
+                 esp_err_to_name(err == ESP_OK ? finish_err : err));
         ESP_LOGE(TAG, "GitHub OTA failed: %s", g_gh_ota_err);
     }
     vTaskDelete(NULL);
@@ -827,9 +890,9 @@ static esp_err_t h_ota_gh_progress(httpd_req_t *req)
     const char *state_str = g_gh_ota_state == GH_OTA_DOWNLOADING ? "downloading" :
                              g_gh_ota_state == GH_OTA_SUCCESS     ? "success"     :
                              g_gh_ota_state == GH_OTA_ERROR       ? "error"       : "idle";
-    char buf[220];
-    snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"percent\":%d,\"error\":\"%s\"}",
-             state_str, g_gh_ota_percent, g_gh_ota_err);
+    char buf[900];
+    snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"percent\":%d,\"error\":\"%s\",\"trace\":\"%s\"}",
+             state_str, g_gh_ota_percent, g_gh_ota_err, g_gh_ota_trace);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
