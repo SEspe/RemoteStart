@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.44  
+**Version:** 1.45  
 **Author:** SEspe  
-**Date:** 2026-07-04  
+**Date:** 2026-07-08  
 **Changelog:**
+- v1.45 — **OTA tab (all four units) gains a second, alternative install path: browse and install directly from this repo's GitHub Releases, no manual `.bin` download needed.** A new "Install from GitHub Releases" card sits above the existing manual-upload card. **Refresh Releases** hits `GET /api/ota/github/releases`, where the device itself calls `api.github.com/repos/SEspe/RemoteStart/releases` (unauthenticated, `per_page=8`, `esp_crt_bundle_attach` for TLS) and returns only the releases that include a binary matching this unit's `FIRMWARE_NAME` (e.g. a `wallas-v*` single-unit release doesn't show up on MasterRemote's picker) — releases without a match are silently omitted, not greyed out. Picking one and clicking **Install Selected** POSTs `{url,size}` to `POST /api/ota/github/install`, which validates the URL is actually under `https://github.com/SEspe/RemoteStart/releases/download/` (rejects anything else — defends against a crafted request pointing the device at an arbitrary host) and spawns a background task (`gh_ota_task`, not the httpd worker) that streams the download straight into flash via `esp_https_ota()`'s advanced perform-loop API, tracking bytes-read against the asset's known size for a live percentage. A new `GET /api/ota/github/progress` endpoint is polled every second by the OTA tab to drive a real progress bar during the download — chosen over a plain spinner specifically because MasterRemote's weak WiFi (§12, RSSI -85 to -92 dBm typical) can make a multi-second install look indistinguishable from a hang without one. On success the device reboots exactly like the existing upload path; on failure the tab shows the `esp_err_to_name()` string and re-enables the controls. New build dependencies (`esp_http_client`, `esp_https_ota`, `mbedtls` for `esp_crt_bundle.h`) added to all four units' `CMakeLists.txt REQUIRES`; cJSON is now pulled in as the managed component `espressif/cjson` via `idf_component.yml` (ESP-IDF v6 removed the old in-tree `json` component name). `cfg.max_uri_handlers` bumped from 16→20 on SlaveHonda/SlaveWallas while adding the three new routes, since they were down to 1 spare slot above the exact-fit-cap failure class documented in v1.27/§12. MasterRemote 1.6.8, SlaveHonda 1.4.6, SlaveWallas 1.6.6, ESPNowRelay 1.1.5; additive endpoints only, no wire-format (ESP-NOW) or existing-JSON-field change. The existing manual file-upload OTA path is unchanged and remains the fallback if GitHub is unreachable.
 - v1.44 — **The Wallas Manual switch on MasterRemote was physically reconnected, reversing the v1.29 "permanently unwired" status.** Confirmed live via `/api/status` with the switch in its "Off" position: `pWM` (the pre-existing, then-meaningless diagnostic field, formula `!gpio_get_level(GPIO5)`) read `true`, meaning the **raw pin is LOW when Off** — i.e. this switch is **non-inverted/active-HIGH** (On demands start), the *opposite* of GPIO4's active-LOW Victron relay input, but the *same* convention as GPIO14's Honda manual switch (which is also read non-inverted): both apparently ground their pin in the idle/off position and float pulled-up HIGH when active. An initial version of this change wrongly assumed GPIO5 would mirror GPIO4's active-LOW polarity by analogy — caught before OTA deploy by checking live `/api/status` first, which is why every hardware-polarity assumption in this codebase gets a "verify against the physical unit" callout (§12). Fixed to read `gpio_get_level(PIN_WALLAS_MANUAL_START)` directly, matching `PIN_HONDA_MANUAL_START`'s pattern. This is a **maintained on/off toggle**, not momentary, and OR's in as a plain level source alongside the Victron relay, web override, and weekly timer: On continuously demands Wallas start, Off just stops contributing to the OR (another source can still keep Wallas running). Restored across all four recompute sites (`isr_wallas_recompute`, `gpio_init()`'s boot-time read, `timer_task`, `h_wallas_stop`) and re-attached its ISR handler, per the §12 OR-recompute rule. `/api/status`'s `pWM` field also flipped to non-inverted to match the corrected command logic; UI label dropped "unused". MasterRemote-only (1.6.6); no data-model or wire-format change. **Not yet verified against the physical switch's On position** — confirm `gWS`/`pWM` flip correctly and the physical relay engages before relying on it.
 - v1.43 — MasterRemote's Nodes tab IP column is now a clickable link (`target="_blank"`) that opens the slave's own web UI in a new tab, when an IP is known — previously it was plain text, requiring a manual copy/retype into the address bar. No link is rendered (falls back to "—") when the node has no IP (e.g. SlaveHonda in ESP-NOW fallback). MasterRemote-only, web UI change (1.6.5), no API/JSON change.
 - v1.42 — **MAC addresses now visible on every unit's own Radio Link/WiFi Link card, and ESPNowRelay gains an ESP-NOW peer RSSI/MAC summary there too.** (1) All four units' `/api/status` now includes the device's own STA MAC (`esp_wifi_get_mac(WIFI_IF_STA, ...)`) as `mac`, shown as a new "Own MAC" row — previously a unit's own MAC was only visible indirectly, e.g. via MasterRemote's Nodes tab or ESPNowRelay's Peers table, not from the device's own page. (2) SlaveHonda/SlaveWallas's Radio Link card gains a **Master MAC** row: the two slaves already tracked MasterRemote's MAC (`g_master_mac`, learned from the discovery beacon) but it was `static`/file-local and never surfaced in the web UI or `/api/status` — exposed as `masterMac` (empty string, shown as "not discovered", until the beacon is heard). (3) ESPNowRelay's Debug tab card, renamed **WiFi Link → Radio Link** (matching the slaves), gains three new rows summarizing each tracked peer (MasterRemote/SlaveHonda/SlaveWallas): RSSI + MAC in one line, or "not discovered" — this data already existed in the Peers table on the Status tab, just not on Debug alongside the other radio-link diagnostics. MasterRemote 1.6.4, SlaveHonda 1.4.5, SlaveWallas 1.6.5, ESPNowRelay 1.1.4; additive JSON change only, no wire-format change.
@@ -451,6 +452,10 @@ Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda
 
 ## 7. OTA Update Procedure
 
+There are two independent install paths on the OTA tab, on all four units: manual file upload, and (since v1.45) installing straight from this repo's GitHub Releases.
+
+### 7.1 Manual file upload
+
 The OTA handler in `web_server.c` uses `esp_ota_ops.h` with streaming writes:
 
 ```c
@@ -462,7 +467,7 @@ esp_ota_set_boot_partition(partition);
 esp_restart();
 ```
 
-### Steps
+Steps:
 
 1. Build the firmware: `cd <Unit> && idf.py build`
 2. Locate the binary: `<Unit>/build/<Unit>.bin`
@@ -472,6 +477,18 @@ esp_restart();
 6. The device reboots automatically. The new version appears in the page header.
 
 > The upload uses a JavaScript `XMLHttpRequest` with `Content-Type: application/octet-stream`. The server reads the raw binary body in 1 KB chunks — no multipart parsing needed.
+
+### 7.2 Install from GitHub Releases (since v1.45)
+
+The device itself can fetch and flash a release binary, without downloading anything to your computer first:
+
+1. Open `http://<device-ip>/` → **OTA Update** tab → **Install from GitHub Releases** card.
+2. Click **Refresh Releases**. The device queries `api.github.com/repos/SEspe/RemoteStart/releases` and lists only the releases that include a binary matching this unit (`GET /api/ota/github/releases`).
+3. Pick a release from the dropdown and click **Install Selected**, then confirm.
+4. `POST /api/ota/github/install` validates the asset URL, then a background task downloads and flashes it via `esp_https_ota()` while the page polls `GET /api/ota/github/progress` every second to show a live percentage.
+5. The device reboots automatically on success, same as manual upload. On failure, the tab shows the error and lets you retry.
+
+Requires the device to have WiFi internet access to `api.github.com`/`github.com` (not just LAN access to your browser) — if that's unavailable, use the manual upload path instead.
 
 ---
 

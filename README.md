@@ -13,7 +13,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 
 ## Framework
 
-**ESP-IDF v6.0.1** (native C, CMake, FreeRTOS). No Arduino framework and no third-party libraries — WiFi, HTTP server, OTA, and the config portal are all built directly on ESP-IDF components.
+**ESP-IDF v6.0.1** (native C, CMake, FreeRTOS). No Arduino framework — WiFi, HTTP server, OTA, and the config portal are all built directly on ESP-IDF components. One managed component, `espressif/cjson` (cJSON, pulled via `idf_component.yml` since ESP-IDF v6 moved it out of the in-tree component set), is used for the GitHub Releases OTA feature.
 
 ## Features
 
@@ -24,7 +24,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **Native captive portal** — first-startup WiFi setup with network scan, served by `esp_http_server` directly
 - **Web UI per unit** — live pin status, node roster with per-link RSSI/channel (MasterRemote), manual start/stop override, OTA update
 - **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a Wallas start source alongside the Victron relay, physical manual switch, and web override (see FSD §6.1a)
-- **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash
+- **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash; alternatively, the device can browse and install directly from this repo's GitHub Releases with a live progress bar, no manual download needed (see FSD §7.2, v1.45)
 - **Individual versioning** — each unit has its own `FIRMWARE_VERSION` in `main/version.h`
 - **Resilient WiFi reconnection** — once a unit has connected once since boot, it retries indefinitely on any later disconnect instead of giving up after a few tries (fixed in v1.25 after a shared WiFi hiccup killed all three units' web servers until a manual power cycle; see FSD §10/§12)
 - **System resource monitor** — free heap, heap low-water mark, uptime, and WiFi reconnect count on every unit's own web UI (`/api/sysinfo`), for catching a slow resource leak before it causes an outage (see FSD §10)
@@ -54,9 +54,15 @@ idf.py -p COMx flash
 
 ## OTA Update
 
+Manual upload:
 1. `idf.py build`
 2. Open `http://<device-ip>/` → **OTA Update** tab
 3. Upload `<Unit>/build/<Unit>.bin`
+
+Or, from GitHub Releases (device needs internet access):
+1. Open `http://<device-ip>/` → **OTA Update** tab → **Install from GitHub Releases**
+2. Click **Refresh Releases**, pick a release, click **Install Selected**
+3. The device downloads and flashes it directly, then reboots
 
 ## Documentation
 

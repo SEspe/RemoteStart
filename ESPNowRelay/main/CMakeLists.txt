@@ -12,5 +12,9 @@ idf_component_register(
         esp_http_server
         esp_timer
         app_update
+        esp_http_client
+        esp_https_ota
+        cjson
+        mbedtls
         log
 )

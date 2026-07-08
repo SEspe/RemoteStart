@@ -18,6 +18,10 @@
 #include "esp_system.h"
 #include "esp_timer.h"
 #include "driver/gpio.h"
+#include "esp_http_client.h"
+#include "esp_https_ota.h"
+#include "esp_crt_bundle.h"
+#include "cJSON.h"
 
 #include "version.h"
 #include "web_server.h"
@@ -81,6 +85,21 @@ extern volatile bool     g_ipcfg_save_requested;
 #define PIN_HONDA_MANUAL_START   14
 #define PIN_WALLAS_START          4
 #define PIN_WALLAS_MANUAL_START   5
+
+/* ── GitHub-releases OTA state ──────────────────────────────────────────────
+ * Install runs in a background task (gh_ota_task) so the httpd worker that
+ * accepted /api/ota/github/install isn't blocked for the whole download --
+ * the OTA tab's progress bar needs to poll /api/ota/github/progress
+ * concurrently while it runs. Single-writer(task)/single-reader(httpd)
+ * polling, no locking, matching this codebase's existing status-field style. */
+#define GH_RELEASES_URL     "https://api.github.com/repos/SEspe/RemoteStart/releases?per_page=8"
+#define GH_ASSET_URL_PREFIX "https://github.com/SEspe/RemoteStart/releases/download/"
+enum { GH_OTA_IDLE = 0, GH_OTA_DOWNLOADING, GH_OTA_SUCCESS, GH_OTA_ERROR };
+static volatile int     g_gh_ota_state   = GH_OTA_IDLE;
+static volatile int     g_gh_ota_percent = 0;
+static volatile int64_t g_gh_ota_total   = 0;
+static char             g_gh_ota_url[256] = "";
+static char             g_gh_ota_err[128] = "";
 
 /* ── HTML Pages ─────────────────────────────────────────────────────────────── */
 static const char WIFI_SETUP_HTML[] =
@@ -202,6 +221,10 @@ static const char INDEX_HTML_TMPL[] =
 ".wf-lk{color:#e94560}"
 ".wf-radio{font-size:.88rem;margin-right:18px}"
 ".wf-warn{font-size:.78rem;color:#e9b400;margin:10px 0}"
+".gh-card select{width:100%;max-width:360px;padding:8px;background:#0f3460;border:1px solid #444;"
+"border-radius:5px;color:#eee;box-sizing:border-box;margin:8px 0}"
+".gh-bar-wrap{background:#eee;border-radius:5px;height:14px;margin-top:10px;overflow:hidden;display:none}"
+".gh-bar{background:#e94560;height:100%;width:0%;transition:width .3s}"
 "</style></head><body>"
 "<div class='hdr'><h1>&#9889; MasterRemote</h1>"
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
@@ -273,6 +296,16 @@ static const char INDEX_HTML_TMPL[] =
 "<div class='wf-sts' id='rebootSts'></div>"
 "</div></div>"
 "<div id='ota' class='pane'>"
+"<div class='ota-wrap gh-card'>"
+"<h3>Install from GitHub Releases</h3>"
+"<p>Fetch and flash a release straight from <code>github.com/SEspe/RemoteStart</code> &mdash; no manual download needed.</p>"
+"<button class='up' onclick='ghRefresh()'>Refresh Releases</button>"
+"<div class='prog' id='ghSts'></div>"
+"<select id='ghSel' style='display:none'></select><br>"
+"<button class='up' id='ghInstallBtn' style='display:none' onclick='ghInstall()'>Install Selected</button>"
+"<div class='gh-bar-wrap' id='ghBarWrap'><div class='gh-bar' id='ghBar'></div></div>"
+"<div class='prog' id='ghProg'></div>"
+"</div>"
 "<div class='ota-wrap'>"
 "<h3>OTA Firmware Update</h3>"
 "<p>Device: " FIRMWARE_NAME " &nbsp;&#8212;&nbsp; v" FIRMWARE_VERSION "</p>"
@@ -382,6 +415,59 @@ static const char INDEX_HTML_TMPL[] =
 "xhr.onload=()=>{p.textContent=xhr.status===200?'Success! Rebooting…':'Error: '+xhr.status;};"
 "xhr.onerror=()=>{p.textContent='Upload error';};"
 "xhr.send(f);}"
+"var g_ghReleases=[],g_ghPollTimer=null;"
+"function ghRefresh(){"
+"var sts=document.getElementById('ghSts');"
+"sts.textContent='Loading releases\\u2026';"
+"document.getElementById('ghSel').style.display='none';"
+"document.getElementById('ghInstallBtn').style.display='none';"
+"fetch('/api/ota/github/releases').then(function(r){return r.json();})"
+".then(function(a){"
+"g_ghReleases=a;"
+"if(!a.length){sts.textContent='No matching releases found for this unit.';return;}"
+"sts.textContent=a.length+' release'+(a.length!==1?'s':'')+' found';"
+"var sel=document.getElementById('ghSel');"
+"sel.innerHTML='';"
+"a.forEach(function(r,i){"
+"var o=document.createElement('option');"
+"o.value=i;"
+"o.textContent=r.tag+' \\u2014 '+r.published.slice(0,10)+' ('+r.asset+')';"
+"sel.appendChild(o);});"
+"sel.style.display='block';"
+"document.getElementById('ghInstallBtn').style.display='inline-block';"
+"}).catch(function(){sts.textContent='Failed to fetch releases from GitHub';});}"
+"function ghInstall(){"
+"var sel=document.getElementById('ghSel');"
+"var r=g_ghReleases[sel.value];"
+"if(!r)return;"
+"if(!confirm('Install '+r.tag+' ('+r.asset+') now? The device will download and flash it, then reboot.'))return;"
+"document.getElementById('ghInstallBtn').disabled=true;"
+"sel.disabled=true;"
+"document.getElementById('ghProg').textContent='Starting install\\u2026';"
+"fetch('/api/ota/github/install',{method:'POST',headers:{'Content-Type':'application/json'},"
+"body:JSON.stringify({url:r.url,size:r.size})})"
+".then(function(resp){"
+"if(!resp.ok)throw new Error('HTTP '+resp.status);"
+"document.getElementById('ghBarWrap').style.display='block';"
+"g_ghPollTimer=setInterval(ghPoll,1000);"
+"}).catch(function(e){"
+"document.getElementById('ghProg').textContent='Install failed to start: '+e.message;"
+"document.getElementById('ghInstallBtn').disabled=false;"
+"sel.disabled=false;});}"
+"function ghPoll(){"
+"fetch('/api/ota/github/progress').then(function(r){return r.json();}).then(function(d){"
+"document.getElementById('ghBar').style.width=d.percent+'%';"
+"if(d.state==='downloading'){"
+"document.getElementById('ghProg').textContent='Downloading & flashing: '+d.percent+'%';"
+"}else if(d.state==='success'){"
+"document.getElementById('ghProg').textContent='Success! Rebooting\\u2026';"
+"clearInterval(g_ghPollTimer);"
+"}else if(d.state==='error'){"
+"document.getElementById('ghProg').textContent='Error: '+d.error;"
+"clearInterval(g_ghPollTimer);"
+"document.getElementById('ghInstallBtn').disabled=false;"
+"document.getElementById('ghSel').disabled=false;"
+"}}).catch(function(){});}"
 "function wfEsc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
 "function wfScan(){"
 "var st=document.getElementById('wfSts');"
@@ -797,6 +883,228 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/ota/github/releases  ── recent GitHub releases with a binary matching
+ * this unit (FIRMWARE_NAME), newest first. Releases without a matching asset
+ * (e.g. a single-unit tag for a different unit) are omitted entirely. */
+static esp_err_t h_ota_gh_releases(httpd_req_t *req)
+{
+    esp_http_client_config_t cfg = {
+        .url = GH_RELEASES_URL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "HTTP client init failed");
+        return ESP_OK;
+    }
+    esp_http_client_set_header(client, "User-Agent", "RemoteStart-ESP32");
+    esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub connection failed");
+        return ESP_OK;
+    }
+    int content_len = esp_http_client_fetch_headers(client);
+    int status = esp_http_client_get_status_code(client);
+    if (status != 200 || content_len <= 0) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub API error");
+        return ESP_OK;
+    }
+
+    char *raw = malloc((size_t)content_len + 1);
+    if (!raw) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_OK;
+    }
+    int got = 0;
+    while (got < content_len) {
+        int r = esp_http_client_read(client, raw + got, content_len - got);
+        if (r <= 0) break;
+        got += r;
+    }
+    raw[got] = '\0';
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    cJSON *arr = cJSON_Parse(raw);
+    free(raw);
+    if (!arr || !cJSON_IsArray(arr)) {
+        if (arr) cJSON_Delete(arr);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bad GitHub response");
+        return ESP_OK;
+    }
+
+    const size_t out_cap = 3072;
+    char *out = malloc(out_cap);
+    if (!out) {
+        cJSON_Delete(arr);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_OK;
+    }
+    size_t n = 0;
+    out[n++] = '[';
+    bool first = true;
+    const char *prefix = FIRMWARE_NAME "_v";
+    size_t plen = strlen(prefix);
+
+    cJSON *rel;
+    cJSON_ArrayForEach(rel, arr) {
+        cJSON *tag    = cJSON_GetObjectItemCaseSensitive(rel, "tag_name");
+        cJSON *pub    = cJSON_GetObjectItemCaseSensitive(rel, "published_at");
+        cJSON *assets = cJSON_GetObjectItemCaseSensitive(rel, "assets");
+        if (!cJSON_IsString(tag) || !cJSON_IsArray(assets)) continue;
+
+        cJSON *asset;
+        cJSON_ArrayForEach(asset, assets) {
+            cJSON *name = cJSON_GetObjectItemCaseSensitive(asset, "name");
+            cJSON *url  = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
+            cJSON *size = cJSON_GetObjectItemCaseSensitive(asset, "size");
+            if (!cJSON_IsString(name) || !cJSON_IsString(url) || !cJSON_IsNumber(size)) continue;
+            size_t nlen = strlen(name->valuestring);
+            if (nlen <= plen || strncmp(name->valuestring, prefix, plen) != 0) continue;
+            if (nlen < 4 || strcmp(name->valuestring + nlen - 4, ".bin") != 0) continue;
+
+            char entry[420];
+            int m = snprintf(entry, sizeof(entry),
+                "%s{\"tag\":\"%s\",\"published\":\"%s\",\"asset\":\"%s\",\"url\":\"%s\",\"size\":%d}",
+                first ? "" : ",",
+                tag->valuestring, cJSON_IsString(pub) ? pub->valuestring : "",
+                name->valuestring, url->valuestring, (int)size->valuedouble);
+            if (m > 0 && n + (size_t)m < out_cap - 2) {
+                memcpy(out + n, entry, (size_t)m);
+                n += (size_t)m;
+                first = false;
+            }
+            break;   /* one matching asset per release is enough */
+        }
+    }
+    cJSON_Delete(arr);
+    out[n++] = ']';
+    out[n] = '\0';
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out);
+    free(out);
+    return ESP_OK;
+}
+
+/* Background task performing the actual download+flash for a GitHub-release
+ * install, kicked off by h_ota_gh_install below. */
+static void gh_ota_task(void *arg)
+{
+    (void)arg;
+    esp_http_client_config_t http_cfg = {
+        .url = g_gh_ota_url,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 15000,
+        .keep_alive_enable = true,
+    };
+    esp_https_ota_config_t ota_cfg = { .http_config = &http_cfg };
+
+    esp_https_ota_handle_t handle = NULL;
+    esp_err_t err = esp_https_ota_begin(&ota_cfg, &handle);
+    if (err != ESP_OK) {
+        g_gh_ota_state = GH_OTA_ERROR;
+        strlcpy(g_gh_ota_err, esp_err_to_name(err), sizeof(g_gh_ota_err));
+        vTaskDelete(NULL);
+        return;
+    }
+
+    do {
+        err = esp_https_ota_perform(handle);
+        int64_t read = esp_https_ota_get_image_len_read(handle);
+        if (g_gh_ota_total > 0) {
+            int pct = (int)(read * 100 / g_gh_ota_total);
+            g_gh_ota_percent = pct > 99 ? 99 : pct;
+        }
+    } while (err == ESP_ERR_HTTPS_OTA_IN_PROGRESS);
+
+    esp_err_t finish_err = ESP_FAIL;
+    if (err == ESP_OK && esp_https_ota_is_complete_data_received(handle)) {
+        finish_err = esp_https_ota_finish(handle);
+    } else {
+        esp_https_ota_abort(handle);
+    }
+
+    if (finish_err == ESP_OK) {
+        g_gh_ota_state   = GH_OTA_SUCCESS;
+        g_gh_ota_percent = 100;
+        ESP_LOGI(TAG, "GitHub OTA success — rebooting");
+        vTaskDelay(pdMS_TO_TICKS(500));
+        esp_restart();
+    } else {
+        g_gh_ota_state = GH_OTA_ERROR;
+        strlcpy(g_gh_ota_err, esp_err_to_name(err == ESP_OK ? finish_err : err), sizeof(g_gh_ota_err));
+        ESP_LOGE(TAG, "GitHub OTA failed: %s", g_gh_ota_err);
+    }
+    vTaskDelete(NULL);
+}
+
+/* POST /api/ota/github/install  ── body: {"url":"...","size":N}
+ * url must point at this repo's release-download host/path (defends against
+ * a crafted request pointing the device at an arbitrary host). Starts
+ * gh_ota_task and returns immediately -- see the state comment above. */
+static esp_err_t h_ota_gh_install(httpd_req_t *req)
+{
+    if (g_gh_ota_state == GH_OTA_DOWNLOADING) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Install already in progress");
+        return ESP_OK;
+    }
+
+    char body[400] = {0};
+    int len = MIN(req->content_len, (int)sizeof(body) - 1);
+    if (len <= 0 || httpd_req_recv(req, body, len) <= 0) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Missing body");
+        return ESP_OK;
+    }
+
+    cJSON *root = cJSON_Parse(body);
+    cJSON *url_j  = root ? cJSON_GetObjectItemCaseSensitive(root, "url")  : NULL;
+    cJSON *size_j = root ? cJSON_GetObjectItemCaseSensitive(root, "size") : NULL;
+    if (!cJSON_IsString(url_j) || !cJSON_IsNumber(size_j) ||
+        strncmp(url_j->valuestring, GH_ASSET_URL_PREFIX, strlen(GH_ASSET_URL_PREFIX)) != 0) {
+        if (root) cJSON_Delete(root);
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "Invalid or disallowed URL");
+        return ESP_OK;
+    }
+
+    strlcpy(g_gh_ota_url, url_j->valuestring, sizeof(g_gh_ota_url));
+    g_gh_ota_total   = (int64_t)size_j->valuedouble;
+    g_gh_ota_percent = 0;
+    g_gh_ota_err[0]  = '\0';
+    cJSON_Delete(root);
+
+    g_gh_ota_state = GH_OTA_DOWNLOADING;
+    if (xTaskCreate(gh_ota_task, "gh_ota", 8192, NULL, 4, NULL) != pdPASS) {
+        g_gh_ota_state = GH_OTA_ERROR;
+        strlcpy(g_gh_ota_err, "Failed to start install task", sizeof(g_gh_ota_err));
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Failed to start install task");
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* GET /api/ota/github/progress  ── polled by the OTA tab's progress bar */
+static esp_err_t h_ota_gh_progress(httpd_req_t *req)
+{
+    const char *state_str = g_gh_ota_state == GH_OTA_DOWNLOADING ? "downloading" :
+                             g_gh_ota_state == GH_OTA_SUCCESS     ? "success"     :
+                             g_gh_ota_state == GH_OTA_ERROR       ? "error"       : "idle";
+    char buf[220];
+    snprintf(buf, sizeof(buf), "{\"state\":\"%s\",\"percent\":%d,\"error\":\"%s\"}",
+             state_str, g_gh_ota_percent, g_gh_ota_err);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* GET /api/scan  ── WiFi scan, returns JSON array */
 static esp_err_t h_scan(httpd_req_t *req)
 {
@@ -973,6 +1281,9 @@ esp_err_t web_server_start(void)
         { .uri="/api/ipconfig/save", .method=HTTP_POST, .handler=h_ipcfg_save },
         { .uri="/api/reboot",        .method=HTTP_POST, .handler=h_reboot     },
         { .uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
+        { .uri="/api/ota/github/releases", .method=HTTP_GET,  .handler=h_ota_gh_releases },
+        { .uri="/api/ota/github/install",  .method=HTTP_POST, .handler=h_ota_gh_install  },
+        { .uri="/api/ota/github/progress", .method=HTTP_GET,  .handler=h_ota_gh_progress },
     };
     for (size_t i = 0; i < sizeof(routes)/sizeof(routes[0]); i++)
         if (httpd_register_uri_handler(server, &routes[i]) != ESP_OK)
