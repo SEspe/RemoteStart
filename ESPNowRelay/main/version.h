@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "1.1.10"
+#define FIRMWARE_VERSION    "1.1.11"
 #define FIRMWARE_NAME       "ESPNowRelay"
 #define WIFI_AP_SSID        "ESPNowRelay-Config"
 #define WIFI_AP_PASSWORD    "honda1234"

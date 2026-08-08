@@ -368,7 +368,7 @@ static const char INDEX_HTML[] =
 "txtRow('AP Signal (RSSI)',d.rssi?d.rssi+' dBm':'not associated')+txtRow('WiFi Channel',d.ch||'\\u2014')+"
 "txtRow('ESP-NOW RSSI (from Master)',d.enRssi?d.enRssi+' dBm':'\\u2014')+txtRow('ESP-NOW Channel',d.enCh||'\\u2014')+"
 "txtRow('Master MAC',d.masterMac||'not discovered');"
-"document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
+"document.getElementById('sts').textContent='Updated: '+hms();"
 "}).catch(()=>{});}"
 "var DBG_PINS=[4,13,14,16,17,18,19,21,22,23,25,26,27,32,33];"
 "function buildDbg(){"
@@ -462,6 +462,10 @@ static const char INDEX_HTML[] =
  * slot) / Installed (running). MasterRemote's page builds the same table for
  * all four units by fetching /api/version from each -- keep this block and
  * /api/version in step with the copies in the sibling units. */
+/* 24-hour clock everywhere in the UI -- toLocaleTimeString() follows the
+ * viewing browser's locale and rendered as 12-hour AM/PM here. */
+"function hms(){var d=new Date(),p=function(n){return(n<10?'0':'')+n;};"
+"return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
 "var VER_ROWS=[],g_verLoaded=false;"
 "function verEsc(s){return String(s).replace(/[&<>\"']/g,'');}"
 "function verNum(v){return String(v||'').replace(/^v/,'').split('.').map(function(x){"
@@ -469,7 +473,9 @@ static const char INDEX_HTML[] =
 "function verOlder(a,b){var A=verNum(a),B=verNum(b),n=Math.max(A.length,B.length);"
 "for(var i=0;i<n;i++){var x=A[i]||0,y=B[i]||0;if(x!==y)return x<y;}return false;}"
 "function verCell(l,v,c){return '<td><span class=\"ver-l\">'+l+'</span>"
-"<span class=\"ver-v '+(v?c:'na')+'\">'+(v?'v'+verEsc(v):'\\u2014')+'</span></td>';}"
+/* Strip any leading 'v' before prefixing one: a pre-v1.49 image's descriptor
+ * holds a git describe string that already starts with one ("v1.31.0"). */
+"<span class=\"ver-v '+(v?c:'na')+'\">'+(v?'v'+verEsc(v).replace(/^v/,''):'\\u2014')+'</span></td>';}"
 "function verRow(u){"
 "var upd=u.gh&&u.installed&&verOlder(u.installed,u.gh);"
 "return '<tr><td class=\"ver-u\">'+verEsc(u.name)+'</td>'+"
@@ -492,7 +498,7 @@ static const char INDEX_HTML[] =
 "VER_ROWS=[{name:'" FIRMWARE_NAME "',gh:gh['" FIRMWARE_NAME "']||'',"
 "installed:v.installed||'',stored:v.stored||''}];"
 "verRender();"
-"sts.textContent='Updated '+new Date().toLocaleTimeString()+"
+"sts.textContent='Updated '+hms()+"
 "(res[0]?'':' \\u2014 GitHub unreachable');});}"
 "var g_ghReleases=[],g_ghPollTimer=null;"
 "function ghRefresh(){"

@@ -1,9 +1,14 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.49  
+**Version:** 1.50  
 **Author:** SEspe  
 **Date:** 2026-08-08  
 **Changelog:**
+- v1.50 — **Two fixes to v1.49's version table, both reported from the live UI.**
+  - **MasterRemote showed no versions for the slaves.** v1.49 had the page fetch `/api/version` from each slave's own address; a browser treats `http://<slave-ip>/` as a different origin from the page it loaded off MasterRemote, and those reads came back empty in practice even with `Access-Control-Allow-Origin: *` on the response. Replaced by **`GET /api/versions[?relay=<ip>]` on MasterRemote**, which collects the other units' `/api/version` itself over plain LAN HTTP (4 s timeout each, so one silent unit can't stall the table) and returns all four rows to a same-origin caller. Slave addresses still come from the ESP-NOW roster; ESPNowRelay's is still typed once into the card and kept in the browser, now passed through as a query parameter (validated against an IPv4 alphabet before it goes into a URL). `/api/version` stays on every unit — it is the data source, and still CORS-open for direct use.
+  - **24-hour clock everywhere.** `new Date().toLocaleTimeString()` follows the viewing browser's locale and was rendering as `7:43:39 PM`. All UI timestamps (Status/Nodes "Updated:", the version card) now go through one `hms()` helper producing zero-padded `HH:MM:SS`, on all four units.
+  - Also: a stored version read from a pre-v1.49 image is a `git describe` string that already starts with `v`, which rendered as `vv1.31.0`; the leading `v` is now stripped before the display prefix is added.
+  MasterRemote 1.6.14, SlaveHonda 1.4.12, SlaveWallas 1.6.12, ESPNowRelay 1.1.11.
 - v1.49 — **Firmware Versions table on the OTA tab: GitHub / Stored / Installed side by side, on all four units** (§6.6, §7.3). Each unit's OTA tab now opens with a version card showing what the newest published release offers for it (**GitHub**), what sits in its inactive OTA slot (**Stored** — the previous image, still bootable), and what it is running (**Installed**); the Installed box turns amber when GitHub has a newer build. **MasterRemote's card lists all four units in one table**, like the reference layout the feature was modelled on.
   - **New `GET /api/version`** on every unit: `{"name","installed","stored","storedName","running"}`. `stored` comes from `esp_ota_get_partition_description()` on `esp_ota_get_next_update_partition()`, and is empty when that slot has never been written or holds no valid image. Served with `Access-Control-Allow-Origin: *` on purpose — MasterRemote's page fetches this same endpoint from the other units' addresses, which is cross-origin from the browser's point of view; the payload is read-only version data on a LAN-only device.
   - **New `GET /api/ota/github/latest`** on every unit: the newest published version per unit, `{"MasterRemote":"…","SlaveHonda":"…","SlaveWallas":"…","ESPNowRelay":"…"}`, parsed out of the `<Unit>_v<ver>.bin` asset filenames. Reuses v1.48's streaming scanner (never materialises the listing) and captures only `browser_download_url`, stopping as soon as all four are known — normally inside the first release, since a unified `v*` tag carries all four bins. All four firmwares carry the identical four-unit handler even though only MasterRemote's page reads more than its own key.
@@ -427,6 +432,7 @@ HTTP endpoints:
 | POST   | `/api/ipconfig/save`| Save IP config (`mode=dhcp\|static&ip=&mask=&gw=&dns=`) to NVS, restart (v1.37) |
 | POST   | `/api/reboot`       | Manual reboot, no state change (v1.38) |
 | GET    | `/api/version`      | JSON: this unit's installed + stored (inactive-slot) version; CORS-open (v1.49, §7.3) |
+| GET    | `/api/versions`     | JSON: all four units' installed + stored, collected device-side; `?relay=<ip>` adds the relay row (v1.50, §7.3) |
 | GET    | `/api/ota/github/latest` | JSON: newest published version per unit, from the release asset names (v1.49, §7.3) |
 | GET    | `/api/ota/github/releases` | JSON: recent releases carrying a binary for this unit (v1.45) |
 | POST   | `/api/ota/github/install`  | Start a background download+flash of a release asset (v1.45) |
@@ -519,14 +525,14 @@ The OTA tab opens with a **Firmware Versions** card, three values per unit:
 | Column | Source | Meaning |
 |--------|--------|---------|
 | **GitHub** | `GET /api/ota/github/latest`, parsed from the `<Unit>_v<ver>.bin` asset names | Newest version published for that unit |
-| **Stored** | `GET /api/version` → `esp_ota_get_partition_description()` on the **inactive** OTA slot | The previous image, still on flash and still bootable |
-| **Installed** | `GET /api/version` → `FIRMWARE_VERSION` | What the unit is running now |
+| **Stored** | `GET /api/version` (via `/api/versions` on MasterRemote) → `esp_ota_get_partition_description()` on the **inactive** OTA slot | The previous image, still on flash and still bootable |
+| **Installed** | `GET /api/version` (via `/api/versions` on MasterRemote) → `FIRMWARE_VERSION` | What the unit is running now |
 
 The Installed box turns amber when GitHub offers a newer version (dotted-numeric comparison). An empty cell means "unknown": no matching release asset, an OTA slot never written, or a unit that didn't answer.
 
-**MasterRemote shows all four units in one table.** Its own row is local; SlaveHonda's and SlaveWallas's come from `/api/version` on the addresses in `/api/nodes`; ESPNowRelay is not part of the ESP-NOW roster (§13 — the repeater is transparent by design and never announces itself), so its address is typed once into the field under the table and remembered by the browser (`localStorage`, per-browser, not device state). The other three units show a single row for themselves.
+**MasterRemote shows all four units in one table**, built from a single same-origin call to `GET /api/versions` (v1.50). MasterRemote does the collecting: its own row locally, SlaveHonda's and SlaveWallas's by fetching `/api/version` over LAN HTTP at the addresses in the ESP-NOW roster (so the table follows a DHCP move), each with a 4 s timeout so one silent unit leaves an empty row instead of stalling the table. ESPNowRelay is not part of that roster (§13 — the repeater is transparent by design and never announces itself), so its address is typed once into the field under the table, remembered by the browser (`localStorage`, per-browser, not device state) and passed to `/api/versions?relay=<ip>`; it is validated against an IPv4 alphabet before being used in a URL. The other three units show a single row for themselves, read locally.
 
-Because MasterRemote's page reads `/api/version` on other hosts, that endpoint — and only that endpoint — carries `Access-Control-Allow-Origin: *`.
+> **Why the device does the collecting** (v1.50): v1.49 had the page fetch each slave directly. A browser treats `http://<slave-ip>/` as a different origin from the page served by MasterRemote, and in practice those reads came back empty — the slave rows stayed blank on real hardware even though every unit answered `/api/version` correctly when queried on its own. `/api/version` keeps its `Access-Control-Allow-Origin: *` header for direct use, but the table no longer depends on it.
 
 > The Stored value is only as good as the app descriptor in the passive slot. Since v1.49 each unit's `CMakeLists.txt` sets `PROJECT_VER` from `main/version.h` so the descriptor carries the real firmware version; images built before that carry a `git describe` string instead, so a freshly updated unit shows an odd-looking Stored value until it has been updated twice.
 

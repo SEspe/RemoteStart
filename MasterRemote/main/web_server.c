@@ -487,7 +487,7 @@ static const char INDEX_HTML_TMPL[] =
 "document.getElementById('wifi').innerHTML="
 "txtRow('Own MAC',d.mac||'\\u2014')+"
 "txtRow('Signal strength',d.rssi+' dBm')+txtRow('Channel',d.ch);"
-"document.getElementById('sts').textContent='Updated: '+new Date().toLocaleTimeString();"
+"document.getElementById('sts').textContent='Updated: '+hms();"
 "}).catch(()=>{});}"
 "function yn(v){return '<span class=\"'+(v?'ok':'dim')+'\">'+(v?'Yes':'No')+'</span>';}"
 "function nodeRow(n,detail){"
@@ -511,7 +511,7 @@ static const char INDEX_HTML_TMPL[] =
 "h+=nodeRow(d.w,'Start CMD:'+(d.w.sc?'Y':'N'));"
 "h+='</table>';"
 "document.getElementById('cli').innerHTML=h;"
-"document.getElementById('cts').textContent='Updated: '+new Date().toLocaleTimeString();"
+"document.getElementById('cts').textContent='Updated: '+hms();"
 "}).catch(()=>{});}"
 "function upload(){"
 "const f=document.getElementById('fw').files[0];"
@@ -526,13 +526,16 @@ static const char INDEX_HTML_TMPL[] =
 "xhr.onerror=()=>{p.textContent='Upload error';};"
 "xhr.send(f);}"
 /* ── OTA tab: firmware version table ───────────────────────────────────────
- * MasterRemote's table covers all four units. Its own row comes from
- * /api/version locally; SlaveHonda's and SlaveWallas's from the same endpoint
- * on their addresses (taken from /api/nodes, so it follows a DHCP move);
- * ESPNowRelay is not in the ESP-NOW roster at all -- the relay is deliberately
- * transparent and never announces itself to Master -- so its address is typed
- * once and kept in the browser's localStorage rather than adding an ESP-NOW
- * message type to a repeater whose whole point is that it changes nothing. */
+ * All four rows come from one same-origin call to /api/versions, which does
+ * the per-unit collecting on the device (see h_versions -- the page fetching
+ * each slave directly is cross-origin and silently came back empty). The only
+ * thing the browser still holds is ESPNowRelay's address, typed once and kept
+ * in localStorage because the relay is deliberately absent from the ESP-NOW
+ * roster; it is handed to /api/versions as a query parameter. */
+/* 24-hour clock everywhere in the UI -- toLocaleTimeString() follows the
+ * viewing browser's locale and rendered as 12-hour AM/PM here. */
+"function hms(){var d=new Date(),p=function(n){return(n<10?'0':'')+n;};"
+"return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
 "var VER_ROWS=[],g_verLoaded=false;"
 "function verEsc(s){return String(s).replace(/[&<>\"']/g,'');}"
 "function verNum(v){return String(v||'').replace(/^v/,'').split('.').map(function(x){"
@@ -540,7 +543,9 @@ static const char INDEX_HTML_TMPL[] =
 "function verOlder(a,b){var A=verNum(a),B=verNum(b),n=Math.max(A.length,B.length);"
 "for(var i=0;i<n;i++){var x=A[i]||0,y=B[i]||0;if(x!==y)return x<y;}return false;}"
 "function verCell(l,v,c){return '<td><span class=\"ver-l\">'+l+'</span>"
-"<span class=\"ver-v '+(v?c:'na')+'\">'+(v?'v'+verEsc(v):'\\u2014')+'</span></td>';}"
+/* Strip any leading 'v' before prefixing one: a pre-v1.49 image's descriptor
+ * holds a git describe string that already starts with one ("v1.31.0"). */
+"<span class=\"ver-v '+(v?c:'na')+'\">'+(v?'v'+verEsc(v).replace(/^v/,''):'\\u2014')+'</span></td>';}"
 "function verRow(u){"
 "var upd=u.gh&&u.installed&&verOlder(u.installed,u.gh);"
 "return '<tr><td class=\"ver-u\">'+verEsc(u.name)+'</td>'+"
@@ -562,22 +567,16 @@ static const char INDEX_HTML_TMPL[] =
 "localStorage.getItem('verRelayAddr')||'';}catch(e){}}"
 "function verRefresh(){"
 "var sts=document.getElementById('verSts');sts.textContent='Reading versions\\u2026';"
-"var rows=[{name:'" FIRMWARE_NAME "',base:''},{name:'SlaveHonda',base:null},"
-"{name:'SlaveWallas',base:null},{name:'ESPNowRelay',base:null}];"
-"verFetch('/api/nodes',5000).then(function(n){"
-"if(n&&n.h&&n.h.ip)rows[1].base='http://'+n.h.ip;"
-"if(n&&n.w&&n.w.ip)rows[2].base='http://'+n.w.ip;"
 "var ra='';try{ra=(localStorage.getItem('verRelayAddr')||'').trim();}catch(e){}"
-"if(ra)rows[3].base='http://'+ra;"
-"return Promise.all([verFetch('/api/ota/github/latest',15000)].concat("
-"rows.map(function(r){return verFetch(r.base===null?null:r.base+'/api/version',6000);})));"
-"}).then(function(res){"
-"var gh=res[0]||{};"
-"VER_ROWS=rows.map(function(r,i){var v=res[i+1]||{};"
-"return {name:r.name,gh:gh[r.name]||'',installed:v.installed||'',stored:v.stored||''};});"
+"Promise.all([verFetch('/api/ota/github/latest',20000),"
+"verFetch('/api/versions'+(ra?'?relay='+encodeURIComponent(ra):''),25000)])"
+".then(function(res){"
+"var gh=res[0]||{},list=res[1]||[];"
+"VER_ROWS=list.map(function(u){return {name:u.name,gh:gh[u.name]||'',"
+"installed:u.installed||'',stored:u.stored||''};});"
 "verRender();"
-"sts.textContent='Updated '+new Date().toLocaleTimeString()+"
-"(res[0]?'':' \\u2014 GitHub unreachable');});}"
+"sts.textContent='Updated '+hms()+(res[0]?'':' \\u2014 GitHub unreachable')+"
+"(res[1]?'':' \\u2014 version read failed');});}"
 "var g_ghReleases=[],g_ghPollTimer=null;"
 "function ghRefresh(){"
 "var sts=document.getElementById('ghSts');"
@@ -1433,6 +1432,109 @@ static esp_err_t h_version(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET http://<ip>/api/version into `body`. Plain HTTP on the LAN, short
+ * timeout: a silent unit must not stall the whole table. */
+static bool ver_http_get(const char *ip, char *body, size_t cap)
+{
+    char url[64];
+    snprintf(url, sizeof(url), "http://%s/api/version", ip);
+    esp_http_client_config_t cfg = { .url = url, .timeout_ms = 4000 };
+    esp_http_client_handle_t c = esp_http_client_init(&cfg);
+    if (!c) return false;
+
+    bool ok = false;
+    if (esp_http_client_open(c, 0) == ESP_OK) {
+        esp_http_client_fetch_headers(c);
+        if (esp_http_client_get_status_code(c) == 200) {
+            int n = esp_http_client_read_response(c, body, (int)cap - 1);
+            if (n > 0) { body[n] = '\0'; ok = true; }
+        }
+        esp_http_client_close(c);
+    }
+    esp_http_client_cleanup(c);
+    return ok;
+}
+
+/* Pulls one "key":"value" string out of a small JSON body, sanitised. Enough
+ * for /api/version's flat five-field object -- no parser (and no allocation)
+ * needed for a ~150 byte response. */
+static void ver_json_str(const char *body, const char *key, char *dst, size_t cap)
+{
+    dst[0] = '\0';
+    const char *p = strstr(body, key);
+    if (!p) return;
+    p += strlen(key);
+    const char *end = strchr(p, '"');
+    ver_sanitize(dst, cap, p, end ? (size_t)(end - p) : strlen(p));
+}
+
+/* GET /api/versions[?relay=<ip>]  ── MasterRemote only: one row per unit for
+ * the OTA tab's four-unit version table.
+ *
+ * MasterRemote collects the other units' /api/version itself rather than
+ * letting the page fetch each unit directly: a browser treats
+ * http://<slave-ip>/ as a different origin from the page it loaded off
+ * MasterRemote, and those cross-origin reads were silently dropped in
+ * practice, leaving the slave rows blank. Fetching server-side keeps the page
+ * talking to one origin only.
+ *
+ * SlaveHonda's and SlaveWallas's addresses come from the ESP-NOW roster, so
+ * the table follows them across a DHCP move. ESPNowRelay is deliberately not
+ * in that roster (§13 -- the repeater is transparent and never announces
+ * itself), so its address is passed in by the page from what the user typed
+ * once into the card. */
+static esp_err_t h_versions(httpd_req_t *req)
+{
+    char relay[16] = "";
+    char query[64];
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[32];
+        if (httpd_query_key_value(query, "relay", val, sizeof(val)) == ESP_OK) {
+            /* Goes straight into a URL: accept only an IPv4 literal's alphabet. */
+            bool ok = val[0] && strlen(val) < sizeof(relay);
+            for (size_t i = 0; ok && val[i]; i++)
+                ok = (val[i] >= '0' && val[i] <= '9') || val[i] == '.';
+            if (ok) strlcpy(relay, val, sizeof(relay));
+        }
+    }
+
+    /* Own row: read locally, same source as /api/version. */
+    char own_stored[40] = "";
+    esp_app_desc_t desc;
+    const esp_partition_t *nxt = esp_ota_get_next_update_partition(NULL);
+    if (nxt && esp_ota_get_partition_description(nxt, &desc) == ESP_OK)
+        ver_sanitize(own_stored, sizeof(own_stored), desc.version, sizeof(desc.version));
+
+    const char *ips[3] = { g_slave_honda.ip, g_slave_wallas.ip, relay };
+
+    char *out = malloc(768);
+    if (!out) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
+        return ESP_OK;
+    }
+    size_t n = snprintf(out, 768,
+        "[{\"name\":\"%s\",\"ip\":\"\",\"installed\":\"%s\",\"stored\":\"%s\"}",
+        FIRMWARE_NAME, FIRMWARE_VERSION, own_stored);
+
+    for (size_t i = 0; i < 3; i++) {
+        char installed[24] = "", stored[40] = "", body[256];
+        if (ips[i][0] && ver_http_get(ips[i], body, sizeof(body))) {
+            ver_json_str(body, "\"installed\":\"", installed, sizeof(installed));
+            ver_json_str(body, "\"stored\":\"",    stored,    sizeof(stored));
+        }
+        n += snprintf(out + n, 768 - n,
+            ",{\"name\":\"%s\",\"ip\":\"%s\",\"installed\":\"%s\",\"stored\":\"%s\"}",
+            GH_UNITS[i + 1], ips[i], installed, stored);
+        if (n >= 760) break;
+    }
+    strlcat(out, "]", 768);
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out);
+    free(out);
+    return ESP_OK;
+}
+
 /* Background task performing the actual download+flash for a GitHub-release
  * install, kicked off by h_ota_gh_install below. */
 static void gh_ota_task(void *arg)
@@ -1781,6 +1883,7 @@ esp_err_t web_server_start(void)
         { .uri="/api/reboot",        .method=HTTP_POST, .handler=h_reboot     },
         { .uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
         { .uri="/api/version",       .method=HTTP_GET,  .handler=h_version    },
+        { .uri="/api/versions",      .method=HTTP_GET,  .handler=h_versions   },
         { .uri="/api/ota/github/releases", .method=HTTP_GET,  .handler=h_ota_gh_releases },
         { .uri="/api/ota/github/latest",   .method=HTTP_GET,  .handler=h_ota_gh_latest   },
         { .uri="/api/ota/github/install",  .method=HTTP_POST, .handler=h_ota_gh_install  },
