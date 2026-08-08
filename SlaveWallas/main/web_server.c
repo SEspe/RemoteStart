@@ -255,6 +255,7 @@ static const char INDEX_HTML[] =
 "<div class='dbg' id='dbg'>…</div></div></div>"
 "<div id='wifinet' class='pane'>"
 "<div class='card'><h3>WiFi Network</h3>"
+"<div class='grid' id='wfLive'>…</div>"
 "<div class='wf-sts' id='wfSts'></div>"
 "<button class='wf-btn wf-btn-s' onclick='wfScan()'>&#128246; Scan Networks</button>"
 "<div class='wf-nets' id='wfNets'></div>"
@@ -375,15 +376,16 @@ static const char INDEX_HTML[] =
 "d.onclick=function(){document.getElementById('wfSid').value=n.ssid;};"
 "c.appendChild(d);});}).catch(function(){"
 "st.textContent='Scan failed \\u2014 try again';});}"
-"var g_liveIp='',g_liveMask='',g_liveGw='';"
+"var g_liveIp='',g_liveMask='',g_liveGw='',g_liveDns='';"
 "function ipModeChange(){"
 "var isStatic=document.getElementById('ipStatic').checked;"
 "document.getElementById('ipFields').style.display=isStatic?'block':'none';"
 "if(isStatic){"
-"var ipEl=document.getElementById('ipAddr'),mEl=document.getElementById('ipMask'),gEl=document.getElementById('ipGw');"
+"var ipEl=document.getElementById('ipAddr'),mEl=document.getElementById('ipMask'),gEl=document.getElementById('ipGw'),dEl=document.getElementById('ipDns');"
 "if(!ipEl.value&&g_liveIp)ipEl.value=g_liveIp;"
 "if(!mEl.value&&g_liveMask)mEl.value=g_liveMask;"
-"if(!gEl.value&&g_liveGw)gEl.value=g_liveGw;}}"
+"if(!gEl.value&&g_liveGw)gEl.value=g_liveGw;"
+"if(!dEl.value&&g_liveDns)dEl.value=g_liveDns;}}"
 "function ipValidate(){"
 "if(!document.getElementById('ipStatic').checked)return true;"
 "var re=/^\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}\\.\\d{1,3}$/;"
@@ -392,10 +394,16 @@ static const char INDEX_HTML[] =
 "return true;}"
 "function fetchIpCfg(){"
 "fetch('/api/ipconfig').then(r=>r.json()).then(d=>{"
-"g_liveIp=d.liveIp||'';g_liveMask=d.liveMask||'';g_liveGw=d.liveGw||'';"
+"g_liveIp=d.liveIp||'';g_liveMask=d.liveMask||'';g_liveGw=d.liveGw||'';g_liveDns=d.liveDns||'';"
+"document.getElementById('wfLive').innerHTML="
+"txtRow('Configured SSID',d.ssid?wfEsc(d.ssid):'not configured')+"
+"txtRow('Connected To',d.apSsid?wfEsc(d.apSsid):'not associated');"
+"var sidEl=document.getElementById('wfSid');"
+"if(!sidEl.value&&d.ssid)sidEl.value=d.ssid;"
 "document.getElementById('ipLive').innerHTML="
+"txtRow('Address Source',d.static?'Static (configured)':'Automatic (DHCP)')+"
 "txtRow('Current IP',d.liveIp||'\\u2014')+txtRow('Subnet Mask',d.liveMask||'\\u2014')+"
-"txtRow('Gateway',d.liveGw||'\\u2014');"
+"txtRow('Gateway',d.liveGw||'\\u2014')+txtRow('DNS Server',d.liveDns||'\\u2014');"
 "document.getElementById('ipDhcp').checked=!d.static;"
 "document.getElementById('ipStatic').checked=d.static;"
 "document.getElementById('ipAddr').value=d.ip;"
@@ -937,6 +945,23 @@ static esp_err_t h_gpio_status(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Copies an SSID (not NUL-terminated in the 32-byte wifi structs) into a JSON
+ * string body: escapes " and \, drops control characters, always terminates.
+ * dst wants 2*32+1 bytes to be guaranteed lossless. */
+static void ssid_json_esc(char *dst, size_t dsz, const uint8_t *ssid)
+{
+    size_t j = 0;
+    for (int k = 0; k < 32 && ssid[k]; k++) {
+        unsigned char c = ssid[k];
+        if (c < 0x20) continue;
+        size_t need = (c == '"' || c == '\\') ? 2 : 1;
+        if (j + need >= dsz) break;
+        if (need == 2) dst[j++] = '\\';
+        dst[j++] = c;
+    }
+    dst[j] = '\0';
+}
+
 /* GET /api/scan  ── WiFi scan, returns JSON array */
 static esp_err_t h_scan(httpd_req_t *req)
 {
@@ -967,13 +992,8 @@ static esp_err_t h_scan(httpd_req_t *req)
     bool first = true;
     for (int i = 0; i < (int)count; i++) {
         if (recs[i].ssid[0] == '\0') continue;
-        char esc[70] = {0};
-        int j = 0;
-        for (int k = 0; recs[i].ssid[k] && k < 32 && j < 66; k++) {
-            unsigned char c = recs[i].ssid[k];
-            if (c == '"' || c == '\\') esc[j++] = '\\';
-            if (c >= 0x20) esc[j++] = c;
-        }
+        char esc[70];
+        ssid_json_esc(esc, sizeof(esc), recs[i].ssid);
         char entry[140];
         snprintf(entry, sizeof(entry), "%s{\"ssid\":\"%s\",\"rssi\":%d,\"auth\":%d}",
                  first ? "" : ",", esc, recs[i].rssi, (int)recs[i].authmode);
@@ -988,10 +1008,16 @@ static esp_err_t h_scan(httpd_req_t *req)
     return ESP_OK;
 }
 
-/* GET /api/ipconfig  ── saved DHCP/static config + the currently active IP */
+/* GET /api/ipconfig  ── everything the WiFi tab shows: the configured WiFi
+ * network, the saved DHCP/static config, and the addressing actually in use.
+ * The live_* fields are read from the netif itself, so they are equally valid
+ * whether the address came from a static config or from the router's DHCP.
+ * ssid is what's provisioned (present even when the unit can't associate);
+ * apSsid is the AP it is genuinely joined to right now (empty when not
+ * associated). */
 static esp_err_t h_ipcfg_get(httpd_req_t *req)
 {
-    char live_ip[16] = "", live_mask[16] = "", live_gw[16] = "";
+    char live_ip[16] = "", live_mask[16] = "", live_gw[16] = "", live_dns[16] = "";
     esp_netif_ip_info_t info;
     esp_netif_t *netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
     if (netif && esp_netif_get_ip_info(netif, &info) == ESP_OK) {
@@ -999,13 +1025,28 @@ static esp_err_t h_ipcfg_get(httpd_req_t *req)
         snprintf(live_mask, sizeof(live_mask), IPSTR, IP2STR(&info.netmask));
         snprintf(live_gw,   sizeof(live_gw),   IPSTR, IP2STR(&info.gw));
     }
-    char buf[400];
+    esp_netif_dns_info_t dns;
+    if (netif && esp_netif_get_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns) == ESP_OK &&
+        dns.ip.u_addr.ip4.addr != 0)
+        snprintf(live_dns, sizeof(live_dns), IPSTR, IP2STR(&dns.ip.u_addr.ip4));
+
+    char cfg_ssid[66] = "", ap_ssid[66] = "";
+    wifi_config_t wcfg;
+    if (esp_wifi_get_config(WIFI_IF_STA, &wcfg) == ESP_OK)
+        ssid_json_esc(cfg_ssid, sizeof(cfg_ssid), wcfg.sta.ssid);
+    wifi_ap_record_t ap;
+    if (esp_wifi_sta_get_ap_info(&ap) == ESP_OK)
+        ssid_json_esc(ap_ssid, sizeof(ap_ssid), ap.ssid);
+
+    char buf[600];
     snprintf(buf, sizeof(buf),
         "{\"static\":%s,\"ip\":\"%s\",\"mask\":\"%s\",\"gw\":\"%s\",\"dns\":\"%s\","
-        "\"liveIp\":\"%s\",\"liveMask\":\"%s\",\"liveGw\":\"%s\"}",
+        "\"ssid\":\"%s\",\"apSsid\":\"%s\","
+        "\"liveIp\":\"%s\",\"liveMask\":\"%s\",\"liveGw\":\"%s\",\"liveDns\":\"%s\"}",
         g_ipcfg_static ? "true" : "false",
         g_ipcfg_ip, g_ipcfg_mask, g_ipcfg_gw, g_ipcfg_dns,
-        live_ip, live_mask, live_gw);
+        cfg_ssid, ap_ssid,
+        live_ip, live_mask, live_gw, live_dns);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
