@@ -64,6 +64,7 @@ extern volatile bool     g_ipcfg_save_requested;
  * polling, no locking, matching this codebase's existing status-field style. */
 #define GH_RELEASES_URL     "https://api.github.com/repos/SEspe/RemoteStart/releases?per_page=8"
 #define GH_ASSET_URL_PREFIX "https://github.com/SEspe/RemoteStart/releases/download/"
+#define GH_REPO_URL         "https://github.com/SEspe/RemoteStart"
 enum { GH_OTA_IDLE = 0, GH_OTA_DOWNLOADING, GH_OTA_SUCCESS, GH_OTA_ERROR };
 static volatile int     g_gh_ota_state   = GH_OTA_IDLE;
 static volatile int     g_gh_ota_percent = 0;
@@ -213,6 +214,8 @@ static const char INDEX_HTML[] =
 ".prog{margin-top:10px;font-size:.85rem;color:#e94560;min-height:1.2em}"
 "button.up{padding:8px 20px;background:#e94560;border:none;border-radius:5px;"
 "color:#fff;cursor:pointer;font-size:.9rem}"
+"a.up.gh-link{display:inline-block;padding:8px 20px;border-radius:5px;font-size:.9rem;"
+"text-decoration:none;color:#fff;background:#0f3460;border:1px solid #e94560}"
 ".wf-lbl{display:block;margin:10px 0 4px;font-size:.85rem}"
 ".wf-in{width:100%;max-width:280px;padding:8px;background:#0f3460;border:1px solid #444;"
 "border-radius:5px;color:#eee;box-sizing:border-box}"
@@ -296,7 +299,8 @@ static const char INDEX_HTML[] =
 "<div class='ota-wrap gh-card'>"
 "<h3>Install from GitHub Releases</h3>"
 "<p>Fetch and flash a release straight from <code>github.com/SEspe/RemoteStart</code> &mdash; no manual download needed.</p>"
-"<button class='up' onclick='ghRefresh()'>Refresh Releases</button>"
+"<button class='up' onclick='ghRefresh()'>Refresh Releases</button> "
+"<a class='up gh-link' href='" GH_REPO_URL "' target='_blank' rel='noopener'>Go GitHub</a>"
 "<div class='prog' id='ghSts'></div>"
 "<select id='ghSel' style='display:none'></select><br>"
 "<button class='up' id='ghInstallBtn' style='display:none' onclick='ghInstall()'>Install Selected</button>"
@@ -667,9 +671,39 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* One literal key the release scanner watches for in the streaming response. */
+typedef struct { const char *pat; size_t len; size_t k; } gh_key_t;
+
+/* Advances a literal matcher by one byte; true when the whole key completes. */
+static bool gh_key_feed(gh_key_t *k, char c)
+{
+    if (c == k->pat[k->k]) {
+        if (++k->k == k->len) { k->k = 0; return true; }
+    } else {
+        k->k = (c == k->pat[0]) ? 1 : 0;
+    }
+    return false;
+}
+
 /* GET /api/ota/github/releases  ── recent GitHub releases with a binary matching
  * this unit (FIRMWARE_NAME), newest first. Releases without a matching asset
- * (e.g. a single-unit tag for a different unit) are omitted entirely. */
+ * (e.g. a single-unit tag for a different unit) are omitted entirely.
+ *
+ * The body is scanned byte-by-byte as it streams in, rather than buffered
+ * whole and handed to cJSON. Every published release carries four per-unit
+ * assets of ~20 JSON fields each, so the listing had grown past 68 KB; a full
+ * parse needs the raw buffer plus a cJSON tree several times its size, which
+ * against the ~200 KB heap these units run with had already stopped fitting on
+ * MasterRemote (§12, v1.48) while still squeaking through on the others. Since
+ * the payload grows with every release, trimming per_page would only have
+ * postponed it -- the scanner instead holds nothing but the fields it is
+ * currently capturing, so peak cost no longer depends on the release count.
+ *
+ * Key order within the JSON is what makes this work: tag_name and published_at
+ * belong to the release object and precede its assets array, and within an
+ * asset, size precedes browser_download_url. So each URL completes a candidate
+ * using the most recent tag/date/size seen, and the asset filename is the
+ * URL's own last path segment -- no separate "name" lookup needed. */
 static esp_err_t h_ota_gh_releases(httpd_req_t *req)
 {
     esp_http_client_config_t cfg = {
@@ -690,88 +724,111 @@ static esp_err_t h_ota_gh_releases(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub connection failed");
         return ESP_OK;
     }
-    int content_len = esp_http_client_fetch_headers(client);
+    /* Return value deliberately unused: it is -1 for a chunked response, which
+     * the scanner handles fine -- only the status code is a real gate here. */
+    esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
-    if (status != 200 || content_len <= 0) {
+    if (status != 200) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub API error");
-        return ESP_OK;
-    }
-
-    char *raw = malloc((size_t)content_len + 1);
-    if (!raw) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_OK;
-    }
-    int got = 0;
-    while (got < content_len) {
-        int r = esp_http_client_read(client, raw + got, content_len - got);
-        if (r <= 0) break;
-        got += r;
-    }
-    raw[got] = '\0';
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    cJSON *arr = cJSON_Parse(raw);
-    free(raw);
-    if (!arr || !cJSON_IsArray(arr)) {
-        if (arr) cJSON_Delete(arr);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bad GitHub response");
+        char msg[64];
+        snprintf(msg, sizeof(msg), "GitHub API returned HTTP %d", status);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, msg);
         return ESP_OK;
     }
 
     const size_t out_cap = 3072;
     char *out = malloc(out_cap);
     if (!out) {
-        cJSON_Delete(arr);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_OK;
     }
+
+    gh_key_t k_tag  = { "\"tag_name\":\"",             12, 0 };
+    gh_key_t k_pub  = { "\"published_at\":\"",         16, 0 };
+    gh_key_t k_size = { "\"size\":",                    7, 0 };
+    gh_key_t k_url  = { "\"browser_download_url\":\"", 24, 0 };
+
+    enum { CAP_NONE = 0, CAP_TAG, CAP_PUB, CAP_SIZE, CAP_URL };
+    int    cap = CAP_NONE;
+    size_t caplen = 0;
+    char   tag[40] = "", pub[40] = "", url[220] = "", emitted[40] = "";
+    long   asize = 0;
+
+    const char *prefix = FIRMWARE_NAME "_v";
+    const size_t plen  = strlen(prefix);
+    const size_t dlen  = strlen(GH_ASSET_URL_PREFIX);
+
     size_t n = 0;
     out[n++] = '[';
-    bool first = true;
-    const char *prefix = FIRMWARE_NAME "_v";
-    size_t plen = strlen(prefix);
+    bool first = true, full = false;
+    char buf[512];
+    int  r;
 
-    cJSON *rel;
-    cJSON_ArrayForEach(rel, arr) {
-        cJSON *tag    = cJSON_GetObjectItemCaseSensitive(rel, "tag_name");
-        cJSON *pub    = cJSON_GetObjectItemCaseSensitive(rel, "published_at");
-        cJSON *assets = cJSON_GetObjectItemCaseSensitive(rel, "assets");
-        if (!cJSON_IsString(tag) || !cJSON_IsArray(assets)) continue;
+    while (!full && (r = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+        for (int i = 0; i < r && !full; i++) {
+            char c = buf[i];
 
-        cJSON *asset;
-        cJSON_ArrayForEach(asset, assets) {
-            cJSON *name = cJSON_GetObjectItemCaseSensitive(asset, "name");
-            cJSON *url  = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
-            cJSON *size = cJSON_GetObjectItemCaseSensitive(asset, "size");
-            if (!cJSON_IsString(name) || !cJSON_IsString(url) || !cJSON_IsNumber(size)) continue;
-            size_t nlen = strlen(name->valuestring);
-            if (nlen <= plen || strncmp(name->valuestring, prefix, plen) != 0) continue;
-            if (nlen < 4 || strcmp(name->valuestring + nlen - 4, ".bin") != 0) continue;
-
-            char entry[420];
-            int m = snprintf(entry, sizeof(entry),
-                "%s{\"tag\":\"%s\",\"published\":\"%s\",\"asset\":\"%s\",\"url\":\"%s\",\"size\":%d}",
-                first ? "" : ",",
-                tag->valuestring, cJSON_IsString(pub) ? pub->valuestring : "",
-                name->valuestring, url->valuestring, (int)size->valuedouble);
-            if (m > 0 && n + (size_t)m < out_cap - 2) {
-                memcpy(out + n, entry, (size_t)m);
-                n += (size_t)m;
-                first = false;
+            if (cap != CAP_NONE) {
+                bool done = (cap == CAP_SIZE) ? (c < '0' || c > '9') : (c == '"');
+                if (!done) {
+                    switch (cap) {   /* anything overlong is silently truncated */
+                    case CAP_TAG:  if (caplen < sizeof(tag) - 1) tag[caplen++] = c; break;
+                    case CAP_PUB:  if (caplen < sizeof(pub) - 1) pub[caplen++] = c; break;
+                    case CAP_URL:  if (caplen < sizeof(url) - 1) url[caplen++] = c; break;
+                    case CAP_SIZE: if (caplen < 12) { asize = asize * 10 + (c - '0'); caplen++; } break;
+                    }
+                    continue;
+                }
+                if (cap == CAP_TAG) tag[caplen] = '\0';
+                if (cap == CAP_PUB) pub[caplen] = '\0';
+                if (cap == CAP_URL) {
+                    url[caplen] = '\0';
+                    /* One entry per release: the first matching asset wins, any
+                     * later asset of the same release is skipped by tag. */
+                    const char *slash = strrchr(url, '/');
+                    const char *base  = slash ? slash + 1 : url;
+                    size_t blen = strlen(base);
+                    if (strncmp(url, GH_ASSET_URL_PREFIX, dlen) == 0 &&
+                        blen > plen && strncmp(base, prefix, plen) == 0 &&
+                        blen > 4 && strcmp(base + blen - 4, ".bin") == 0 &&
+                        strcmp(tag, emitted) != 0) {
+                        char entry[420];
+                        int m = snprintf(entry, sizeof(entry),
+                            "%s{\"tag\":\"%s\",\"published\":\"%s\",\"asset\":\"%s\","
+                            "\"url\":\"%s\",\"size\":%ld}",
+                            first ? "" : ",", tag, pub, base, url, asize);
+                        if (m > 0 && n + (size_t)m < out_cap - 2) {
+                            memcpy(out + n, entry, (size_t)m);
+                            n += (size_t)m;
+                            first = false;
+                            strlcpy(emitted, tag, sizeof(emitted));
+                        } else {
+                            full = true;   /* listing full; newest are already in */
+                        }
+                    }
+                }
+                cap = CAP_NONE;
+                /* fall through so the terminating byte still feeds the matchers */
             }
-            break;   /* one matching asset per release is enough */
+
+            bool m_tag  = gh_key_feed(&k_tag,  c);
+            bool m_pub  = gh_key_feed(&k_pub,  c);
+            bool m_size = gh_key_feed(&k_size, c);
+            bool m_url  = gh_key_feed(&k_url,  c);
+            if      (m_tag)  { cap = CAP_TAG;  caplen = 0; }
+            else if (m_pub)  { cap = CAP_PUB;  caplen = 0; }
+            else if (m_size) { cap = CAP_SIZE; caplen = 0; asize = 0; }
+            else if (m_url)  { cap = CAP_URL;  caplen = 0; }
         }
     }
-    cJSON_Delete(arr);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
     out[n++] = ']';
     out[n] = '\0';
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, out);
     free(out);
@@ -1130,6 +1187,14 @@ esp_err_t web_server_start(void)
     cfg.lru_purge_enable = true;   /* evict LRU session when the socket pool (default 7)
                                       is full -- abandoned client connections otherwise
                                       exhaust it and wedge HTTP until reboot (FSD v1.35) */
+    cfg.max_open_sockets = 7;      /* explicit because it is half of a budget: httpd also holds
+                                      a listener and a control socket, so 7 sessions occupy 9 of
+                                      CONFIG_LWIP_MAX_SOCKETS. That was 10, leaving a single
+                                      descriptor for everything else -- and a browser parked on
+                                      a polling tab fills all 7 session slots, so the OUTBOUND
+                                      TLS socket for a GitHub fetch or install had none left and
+                                      failed with ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET (v1.48).
+                                      The pool is now 16; keep headroom if either number moves. */
     if (httpd_start(&server, &cfg) != ESP_OK) { ESP_LOGE(TAG, "Start failed"); return ESP_FAIL; }
     static const httpd_uri_t routes[] = {
         { .uri="/",                .method=HTTP_GET,  .handler=h_root        },

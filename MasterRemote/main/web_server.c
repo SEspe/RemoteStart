@@ -95,6 +95,7 @@ extern volatile bool     g_ipcfg_save_requested;
  * polling, no locking, matching this codebase's existing status-field style. */
 #define GH_RELEASES_URL     "https://api.github.com/repos/SEspe/RemoteStart/releases?per_page=8"
 #define GH_ASSET_URL_PREFIX "https://github.com/SEspe/RemoteStart/releases/download/"
+#define GH_REPO_URL         "https://github.com/SEspe/RemoteStart"
 enum { GH_OTA_IDLE = 0, GH_OTA_DOWNLOADING, GH_OTA_SUCCESS, GH_OTA_ERROR };
 static volatile int     g_gh_ota_state   = GH_OTA_IDLE;
 static volatile int     g_gh_ota_percent = 0;
@@ -227,6 +228,10 @@ static const char INDEX_HTML_TMPL[] =
 ".row{display:flex;justify-content:space-between;align-items:center;"
 "background:#0f3460;border-radius:5px;padding:7px 12px;font-size:.83rem}"
 ".led{width:12px;height:12px;border-radius:50%}"
+".dbg{display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:6px}"
+".dbg .row{flex-direction:column;align-items:stretch;gap:4px}"
+".dbg .row>span:first-child{display:inline-flex;align-items:center;justify-content:center;gap:4px;font-weight:bold}"
+".btns{display:flex;gap:4px}"
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
 ".ok{color:#4caf50}.dim{color:#888}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
@@ -250,6 +255,8 @@ static const char INDEX_HTML_TMPL[] =
 ".prog{margin-top:10px;font-size:.85rem;color:#e94560;min-height:1.2em}"
 "button.up{padding:8px 20px;background:#e94560;border:none;border-radius:5px;"
 "color:#fff;cursor:pointer;font-size:.9rem}"
+"a.up.gh-link{display:inline-block;padding:8px 20px;border-radius:5px;font-size:.9rem;"
+"text-decoration:none;color:#fff;background:#0f3460;border:1px solid #e94560}"
 ".wf-lbl{display:block;margin:10px 0 4px;font-size:.85rem}"
 ".wf-in{width:100%;max-width:280px;padding:8px;background:#0f3460;border:1px solid #444;"
 "border-radius:5px;color:#eee;box-sizing:border-box}"
@@ -297,6 +304,17 @@ static const char INDEX_HTML_TMPL[] =
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
+"<div class='card'><h3>Manual GPIO Test</h3>"
+"<p class='wf-warn'>Hardware bring-up only. Every GPIO's live level is shown as a "
+"dot (green = HIGH). Pins with ON/OFF buttons can be forced to OUTPUT and "
+"driven, overriding normal operation until next reboot. Reserved pins "
+"(strapping: 0,2,5,12,15; flash: 6-11; UART0 console: 1,3; input-only: 34-39) "
+"show status only, no buttons.</p>"
+"<p class='wf-warn'>On this unit specifically, GPIO4 (Wallas / Victron relay) and "
+"GPIO14 (Honda manual switch) are <b>inputs driven by external contacts</b> &mdash; "
+"forcing them to OUTPUT puts the pin in contention with whatever is wired to it. "
+"Read their dots freely; only drive them with the external wiring disconnected.</p>"
+"<div class='dbg' id='dbg'>…</div></div>"
 "</div>"
 "<div id='nodes' class='pane'>"
 "<div class='tbl-wrap' id='cli'>…</div><div class='ts' id='cts'></div></div>"
@@ -346,7 +364,8 @@ static const char INDEX_HTML_TMPL[] =
 "<div class='ota-wrap gh-card'>"
 "<h3>Install from GitHub Releases</h3>"
 "<p>Fetch and flash a release straight from <code>github.com/SEspe/RemoteStart</code> &mdash; no manual download needed.</p>"
-"<button class='up' onclick='ghRefresh()'>Refresh Releases</button>"
+"<button class='up' onclick='ghRefresh()'>Refresh Releases</button> "
+"<a class='up gh-link' href='" GH_REPO_URL "' target='_blank' rel='noopener'>Go GitHub</a>"
 "<div class='prog' id='ghSts'></div>"
 "<select id='ghSel' style='display:none'></select><br>"
 "<button class='up' id='ghInstallBtn' style='display:none' onclick='ghInstall()'>Install Selected</button>"
@@ -372,6 +391,24 @@ static const char INDEX_HTML_TMPL[] =
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
+"var DBG_PINS=[4,13,14,16,17,18,19,21,22,23,25,26,27,32,33];"
+"function buildDbg(){"
+"var h='';"
+"for(var p=0;p<=39;p++){"
+"var manip=DBG_PINS.indexOf(p)!==-1;"
+"var ctl=manip?"
+"'<span class=\"btns\"><button class=\"go go-on\" onclick=\"gset('+p+',1)\">ON</button>"
+"<button class=\"go go-off\" onclick=\"gset('+p+',0)\">OFF</button></span>':"
+"'<span class=\"dim\" style=\"font-size:.7rem\">reserved</span>';"
+"h+='<div class=\"row\"><span>GPIO'+p+' : <span class=\"led off-l\" id=\"dl'+p+'\"></span></span>'+ctl+'</div>';}"
+"document.getElementById('dbg').innerHTML=h;}"
+"function fetchDbg(){"
+"fetch('/api/gpio/status').then(r=>r.json()).then(d=>{"
+"d.lvl.forEach(function(v,p){"
+"var el=document.getElementById('dl'+p);"
+"if(el)el.className='led '+(v?'on-l':'off-l');});"
+"}).catch(()=>{});}"
+"function gset(pin,level){fetch('/api/gpio/set?pin='+pin+'&level='+level).catch(()=>{});}"
 "function fmtKB(n){return Math.round(n/1024)+' KB';}"
 "function fmtUptime(s){var d=Math.floor(s/86400),h=Math.floor(s%86400/3600),m=Math.floor(s%3600/60);"
 "return (d?d+'d ':'')+(h||d?h+'h ':'')+m+'m';}"
@@ -576,11 +613,13 @@ static const char INDEX_HTML_TMPL[] =
 "var stOn=document.getElementById('status').classList.contains('on');"
 "var dbOn=document.getElementById('debug').classList.contains('on');"
 "if(stOn||dbOn)fetchStatus();"
-"if(dbOn)fetchSys();"
+"if(dbOn){fetchSys();fetchDbg();}"
 "if(document.getElementById('nodes').classList.contains('on'))fetchNodes();"
 "},2000);"
 "fetchStatus();"
 "fetchSys();"
+"buildDbg();"
+"fetchDbg();"
 "buildTimer();"
 "fetchTimer();"
 "</script></body></html>";
@@ -937,9 +976,87 @@ static esp_err_t h_ota_upload(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* GET /api/gpio/set?pin=N&level=0|1  ── DEBUG ONLY: force any non-reserved
+ * GPIO to OUTPUT and drive it. For hardware bring-up when pin wiring is
+ * uncertain -- reconfigures the pin every call, overriding whatever normal
+ * operation was doing with it until the next reboot.
+ *
+ * Note this unit's exposure differs from the slaves': its Victron-relay and
+ * manual-switch pins are INPUTS fed by external contacts (§2), so driving one
+ * of those puts the ESP32 pad in contention with whatever is wired to it. The
+ * Debug tab says so; the reserved-pin rules below already cover GPIO5/GPIO15
+ * (strapping), leaving GPIO4 and GPIO14 as the pins to be careful with. */
+static esp_err_t h_gpio_set(httpd_req_t *req)
+{
+    char query[64] = {0}, pin_str[8] = {0}, lvl_str[8] = {0};
+    int pin = -1, level = -1;
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        if (httpd_query_key_value(query, "pin", pin_str, sizeof(pin_str)) == ESP_OK)
+            pin = atoi(pin_str);
+        if (httpd_query_key_value(query, "level", lvl_str, sizeof(lvl_str)) == ESP_OK)
+            level = atoi(lvl_str);
+    }
+    if (pin < 0 || pin > 39 || (level != 0 && level != 1)) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "bad pin/level");
+        return ESP_OK;
+    }
+    gpio_reset_pin(pin);
+    gpio_set_direction(pin, GPIO_MODE_OUTPUT);
+    gpio_set_level(pin, level);
+    ESP_LOGW(TAG, "DEBUG: forced GPIO%d = %d", pin, level);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* GET /api/gpio/status  ── DEBUG ONLY: read-only level of every GPIO 0-39,
+ * for the Debug tab's status dots. gpio_get_level() is passive (just reads
+ * the GPIO_IN register) so this is safe to call even on reserved pins
+ * (strapping, flash, UART0) -- unlike h_gpio_set, it never reconfigures a pin. */
+static esp_err_t h_gpio_status(httpd_req_t *req)
+{
+    char buf[200];
+    int n = snprintf(buf, sizeof(buf), "{\"lvl\":[");
+    for (int i = 0; i <= 39 && n < (int)sizeof(buf) - 4; i++)
+        n += snprintf(buf + n, sizeof(buf) - n, "%s%d", i ? "," : "", gpio_get_level(i));
+    snprintf(buf + n, sizeof(buf) - n, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* One literal key the release scanner watches for in the streaming response. */
+typedef struct { const char *pat; size_t len; size_t k; } gh_key_t;
+
+/* Advances a literal matcher by one byte; true when the whole key completes. */
+static bool gh_key_feed(gh_key_t *k, char c)
+{
+    if (c == k->pat[k->k]) {
+        if (++k->k == k->len) { k->k = 0; return true; }
+    } else {
+        k->k = (c == k->pat[0]) ? 1 : 0;
+    }
+    return false;
+}
+
 /* GET /api/ota/github/releases  ── recent GitHub releases with a binary matching
  * this unit (FIRMWARE_NAME), newest first. Releases without a matching asset
- * (e.g. a single-unit tag for a different unit) are omitted entirely. */
+ * (e.g. a single-unit tag for a different unit) are omitted entirely.
+ *
+ * The body is scanned byte-by-byte as it streams in, rather than buffered
+ * whole and handed to cJSON. Every published release carries four per-unit
+ * assets of ~20 JSON fields each, so the listing had grown past 68 KB; a full
+ * parse needs the raw buffer plus a cJSON tree several times its size, which
+ * against the ~200 KB heap these units run with had already stopped fitting on
+ * MasterRemote (§12, v1.48) while still squeaking through on the others. Since
+ * the payload grows with every release, trimming per_page would only have
+ * postponed it -- the scanner instead holds nothing but the fields it is
+ * currently capturing, so peak cost no longer depends on the release count.
+ *
+ * Key order within the JSON is what makes this work: tag_name and published_at
+ * belong to the release object and precede its assets array, and within an
+ * asset, size precedes browser_download_url. So each URL completes a candidate
+ * using the most recent tag/date/size seen, and the asset filename is the
+ * URL's own last path segment -- no separate "name" lookup needed. */
 static esp_err_t h_ota_gh_releases(httpd_req_t *req)
 {
     esp_http_client_config_t cfg = {
@@ -960,88 +1077,111 @@ static esp_err_t h_ota_gh_releases(httpd_req_t *req)
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub connection failed");
         return ESP_OK;
     }
-    int content_len = esp_http_client_fetch_headers(client);
+    /* Return value deliberately unused: it is -1 for a chunked response, which
+     * the scanner handles fine -- only the status code is a real gate here. */
+    esp_http_client_fetch_headers(client);
     int status = esp_http_client_get_status_code(client);
-    if (status != 200 || content_len <= 0) {
+    if (status != 200) {
         esp_http_client_close(client);
         esp_http_client_cleanup(client);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub API error");
-        return ESP_OK;
-    }
-
-    char *raw = malloc((size_t)content_len + 1);
-    if (!raw) {
-        esp_http_client_close(client);
-        esp_http_client_cleanup(client);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
-        return ESP_OK;
-    }
-    int got = 0;
-    while (got < content_len) {
-        int r = esp_http_client_read(client, raw + got, content_len - got);
-        if (r <= 0) break;
-        got += r;
-    }
-    raw[got] = '\0';
-    esp_http_client_close(client);
-    esp_http_client_cleanup(client);
-
-    cJSON *arr = cJSON_Parse(raw);
-    free(raw);
-    if (!arr || !cJSON_IsArray(arr)) {
-        if (arr) cJSON_Delete(arr);
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Bad GitHub response");
+        char msg[64];
+        snprintf(msg, sizeof(msg), "GitHub API returned HTTP %d", status);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, msg);
         return ESP_OK;
     }
 
     const size_t out_cap = 3072;
     char *out = malloc(out_cap);
     if (!out) {
-        cJSON_Delete(arr);
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "Out of memory");
         return ESP_OK;
     }
+
+    gh_key_t k_tag  = { "\"tag_name\":\"",             12, 0 };
+    gh_key_t k_pub  = { "\"published_at\":\"",         16, 0 };
+    gh_key_t k_size = { "\"size\":",                    7, 0 };
+    gh_key_t k_url  = { "\"browser_download_url\":\"", 24, 0 };
+
+    enum { CAP_NONE = 0, CAP_TAG, CAP_PUB, CAP_SIZE, CAP_URL };
+    int    cap = CAP_NONE;
+    size_t caplen = 0;
+    char   tag[40] = "", pub[40] = "", url[220] = "", emitted[40] = "";
+    long   asize = 0;
+
+    const char *prefix = FIRMWARE_NAME "_v";
+    const size_t plen  = strlen(prefix);
+    const size_t dlen  = strlen(GH_ASSET_URL_PREFIX);
+
     size_t n = 0;
     out[n++] = '[';
-    bool first = true;
-    const char *prefix = FIRMWARE_NAME "_v";
-    size_t plen = strlen(prefix);
+    bool first = true, full = false;
+    char buf[512];
+    int  r;
 
-    cJSON *rel;
-    cJSON_ArrayForEach(rel, arr) {
-        cJSON *tag    = cJSON_GetObjectItemCaseSensitive(rel, "tag_name");
-        cJSON *pub    = cJSON_GetObjectItemCaseSensitive(rel, "published_at");
-        cJSON *assets = cJSON_GetObjectItemCaseSensitive(rel, "assets");
-        if (!cJSON_IsString(tag) || !cJSON_IsArray(assets)) continue;
+    while (!full && (r = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+        for (int i = 0; i < r && !full; i++) {
+            char c = buf[i];
 
-        cJSON *asset;
-        cJSON_ArrayForEach(asset, assets) {
-            cJSON *name = cJSON_GetObjectItemCaseSensitive(asset, "name");
-            cJSON *url  = cJSON_GetObjectItemCaseSensitive(asset, "browser_download_url");
-            cJSON *size = cJSON_GetObjectItemCaseSensitive(asset, "size");
-            if (!cJSON_IsString(name) || !cJSON_IsString(url) || !cJSON_IsNumber(size)) continue;
-            size_t nlen = strlen(name->valuestring);
-            if (nlen <= plen || strncmp(name->valuestring, prefix, plen) != 0) continue;
-            if (nlen < 4 || strcmp(name->valuestring + nlen - 4, ".bin") != 0) continue;
-
-            char entry[420];
-            int m = snprintf(entry, sizeof(entry),
-                "%s{\"tag\":\"%s\",\"published\":\"%s\",\"asset\":\"%s\",\"url\":\"%s\",\"size\":%d}",
-                first ? "" : ",",
-                tag->valuestring, cJSON_IsString(pub) ? pub->valuestring : "",
-                name->valuestring, url->valuestring, (int)size->valuedouble);
-            if (m > 0 && n + (size_t)m < out_cap - 2) {
-                memcpy(out + n, entry, (size_t)m);
-                n += (size_t)m;
-                first = false;
+            if (cap != CAP_NONE) {
+                bool done = (cap == CAP_SIZE) ? (c < '0' || c > '9') : (c == '"');
+                if (!done) {
+                    switch (cap) {   /* anything overlong is silently truncated */
+                    case CAP_TAG:  if (caplen < sizeof(tag) - 1) tag[caplen++] = c; break;
+                    case CAP_PUB:  if (caplen < sizeof(pub) - 1) pub[caplen++] = c; break;
+                    case CAP_URL:  if (caplen < sizeof(url) - 1) url[caplen++] = c; break;
+                    case CAP_SIZE: if (caplen < 12) { asize = asize * 10 + (c - '0'); caplen++; } break;
+                    }
+                    continue;
+                }
+                if (cap == CAP_TAG) tag[caplen] = '\0';
+                if (cap == CAP_PUB) pub[caplen] = '\0';
+                if (cap == CAP_URL) {
+                    url[caplen] = '\0';
+                    /* One entry per release: the first matching asset wins, any
+                     * later asset of the same release is skipped by tag. */
+                    const char *slash = strrchr(url, '/');
+                    const char *base  = slash ? slash + 1 : url;
+                    size_t blen = strlen(base);
+                    if (strncmp(url, GH_ASSET_URL_PREFIX, dlen) == 0 &&
+                        blen > plen && strncmp(base, prefix, plen) == 0 &&
+                        blen > 4 && strcmp(base + blen - 4, ".bin") == 0 &&
+                        strcmp(tag, emitted) != 0) {
+                        char entry[420];
+                        int m = snprintf(entry, sizeof(entry),
+                            "%s{\"tag\":\"%s\",\"published\":\"%s\",\"asset\":\"%s\","
+                            "\"url\":\"%s\",\"size\":%ld}",
+                            first ? "" : ",", tag, pub, base, url, asize);
+                        if (m > 0 && n + (size_t)m < out_cap - 2) {
+                            memcpy(out + n, entry, (size_t)m);
+                            n += (size_t)m;
+                            first = false;
+                            strlcpy(emitted, tag, sizeof(emitted));
+                        } else {
+                            full = true;   /* listing full; newest are already in */
+                        }
+                    }
+                }
+                cap = CAP_NONE;
+                /* fall through so the terminating byte still feeds the matchers */
             }
-            break;   /* one matching asset per release is enough */
+
+            bool m_tag  = gh_key_feed(&k_tag,  c);
+            bool m_pub  = gh_key_feed(&k_pub,  c);
+            bool m_size = gh_key_feed(&k_size, c);
+            bool m_url  = gh_key_feed(&k_url,  c);
+            if      (m_tag)  { cap = CAP_TAG;  caplen = 0; }
+            else if (m_pub)  { cap = CAP_PUB;  caplen = 0; }
+            else if (m_size) { cap = CAP_SIZE; caplen = 0; asize = 0; }
+            else if (m_url)  { cap = CAP_URL;  caplen = 0; }
         }
     }
-    cJSON_Delete(arr);
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
     out[n++] = ']';
     out[n] = '\0';
-
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, out);
     free(out);
@@ -1349,7 +1489,7 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 22;   /* headroom above the current route count -- an exact-fit cap
+    cfg.max_uri_handlers = 28;   /* headroom above the current route count -- an exact-fit cap
                                     silently drops routes registered after the limit is hit, and
                                     the registration loop below now logs if that happens (SlaveHonda
                                     hit exactly this in v1.9.0: /ota/upload silently never registered) */
@@ -1361,6 +1501,14 @@ esp_err_t web_server_start(void)
                                       TCP but never services HTTP again until a reboot
                                       (root-caused live on 2026-07-02: ping OK, TCP
                                       handshake OK, HTTP dead -- FSD v1.35) */
+    cfg.max_open_sockets = 7;      /* explicit because it is half of a budget: httpd also holds
+                                      a listener and a control socket, so 7 sessions occupy 9 of
+                                      CONFIG_LWIP_MAX_SOCKETS. That was 10, leaving a single
+                                      descriptor for everything else -- and a browser parked on
+                                      a polling tab fills all 7 session slots, so the OUTBOUND
+                                      TLS socket for a GitHub fetch or install had none left and
+                                      failed with ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET (v1.48).
+                                      The pool is now 16; keep headroom if either number moves. */
 
     if (httpd_start(&server, &cfg) != ESP_OK) {
         ESP_LOGE(TAG, "Failed to start HTTP server");
@@ -1381,6 +1529,8 @@ esp_err_t web_server_start(void)
         { .uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },
         { .uri="/wifi-save",       .method=HTTP_POST, .handler=h_wifi_save   },
         { .uri="/api/scan",        .method=HTTP_GET,  .handler=h_scan        },
+        { .uri="/api/gpio/set",    .method=HTTP_GET,  .handler=h_gpio_set    },
+        { .uri="/api/gpio/status", .method=HTTP_GET,  .handler=h_gpio_status },
         { .uri="/api/ipconfig",      .method=HTTP_GET,  .handler=h_ipcfg_get  },
         { .uri="/api/ipconfig/save", .method=HTTP_POST, .handler=h_ipcfg_save },
         { .uri="/api/reboot",        .method=HTTP_POST, .handler=h_reboot     },

@@ -6,7 +6,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 
 | Unit         | MCU      | Purpose                                   | Web UI tabs |
 |--------------|----------|--------------------------------------------|-------------|
-| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Debug, Nodes, Weekly Timer, WiFi, OTA Update |
+| MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub  | Pin Status, Debug (incl. Manual GPIO Test), Nodes, Weekly Timer, WiFi, OTA Update |
 | SlaveHonda   | ESP32    | Honda generator control (WiFi-preferred, ESP-NOW fallback) | Status, Debug, WiFi, OTA Update |
 | SlaveWallas  | ESP32-C6 | Wallas heater control (WiFi required)     | Status, Debug, WiFi, OTA Update |
 | ESPNowRelay  | ESP32-C6 | Optional ESP-NOW store-and-forward repeater (see FSD §13) | Status (traffic/peers), Debug, WiFi, OTA Update |
@@ -24,7 +24,7 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **Native captive portal** — first-startup WiFi setup with network scan, served by `esp_http_server` directly
 - **Web UI per unit** — live pin status, node roster with per-link RSSI/channel (MasterRemote), manual start/stop override, OTA update
 - **NTP clock & weekly Wallas timer** (MasterRemote) — SNTP-synced CET/CEST clock; per-day enable with start/stop `HH:MM` window, OR'd in as a Wallas start source alongside the Victron relay, physical manual switch, and web override (see FSD §6.1a)
-- **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash; alternatively, the device can browse and install directly from this repo's GitHub Releases with a live progress bar, no manual download needed (see FSD §7.2, v1.45)
+- **OTA firmware updates** — upload a `.bin` via the browser, no USB cable needed after the first flash; alternatively, the device can browse and install directly from this repo's GitHub Releases with a live progress bar, no manual download needed, plus a **Go GitHub** link straight to the repo (see FSD §7.2, v1.45/v1.48). The release listing is parsed as it streams in rather than buffered whole, so it stays within heap no matter how many releases accumulate, and the LWIP socket pool leaves room for the device's own outbound connection even with a browser parked on a polling tab (see FSD §12, v1.48)
 - **Individual versioning** — each unit has its own `FIRMWARE_VERSION` in `main/version.h`
 - **Resilient WiFi reconnection** — once a unit has connected once since boot, it retries indefinitely on any later disconnect instead of giving up after a few tries (fixed in v1.25 after a shared WiFi hiccup killed all three units' web servers until a manual power cycle; see FSD §10/§12)
 - **System resource monitor** — free heap, heap low-water mark, uptime, and WiFi reconnect count on every unit's own web UI (`/api/sysinfo`), for catching a slow resource leak before it causes an outage (see FSD §10)
