@@ -13,6 +13,7 @@
 #include "esp_log.h"
 #include "esp_http_server.h"
 #include "esp_ota_ops.h"
+#include "esp_app_desc.h"
 #include "esp_wifi.h"
 #include "esp_netif.h"
 #include "esp_system.h"
@@ -278,6 +279,19 @@ static const char INDEX_HTML_TMPL[] =
 "border-radius:5px;color:#eee;box-sizing:border-box;margin:8px 0}"
 ".gh-bar-wrap{background:#eee;border-radius:5px;height:14px;margin-top:10px;overflow:hidden;display:none}"
 ".gh-bar{background:#e94560;height:100%;width:0%;transition:width .3s}"
+".ver-wrap{overflow-x:auto}"
+"table.ver{border-collapse:collapse;width:100%}"
+"table.ver td{padding:7px 5px;border-bottom:1px solid #e6e6e6;vertical-align:middle}"
+"table.ver tr:last-child td{border-bottom:none}"
+".ver-u{font-size:.95rem;color:#333;white-space:nowrap;padding-right:12px}"
+".ver-l{display:block;font-size:.62rem;color:#888;margin-bottom:2px}"
+".ver-v{display:block;background:#e4e4e4;border-radius:6px;padding:5px 8px;text-align:center;"
+"font-size:.95rem;color:#222;min-width:80px}"
+".ver-v.old{background:#ffd27f;color:#4a3500;font-weight:bold}"
+".ver-v.na{background:#f0f0f0;color:#aaa}"
+".ver-cfg{display:block;font-size:.78rem;color:#555;margin-top:12px}"
+".ver-cfg input{width:170px;padding:5px 7px;border:1px solid #ccc;border-radius:5px;"
+"color:#333;background:#fff;margin-left:6px}"
 "</style></head><body>"
 "<div class='hdr'><h1>&#9889; MasterRemote</h1>"
 "<span class='v'>v" FIRMWARE_VERSION " &nbsp;|&nbsp; %IP%</span></div>"
@@ -361,6 +375,17 @@ static const char INDEX_HTML_TMPL[] =
 "<div class='wf-sts' id='rebootSts'></div>"
 "</div></div>"
 "<div id='ota' class='pane'>"
+"<div class='ota-wrap'>"
+"<h3>Firmware Versions</h3>"
+"<p><b>GitHub</b> = newest release asset for that unit &nbsp;&#8226;&nbsp; "
+"<b>Stored</b> = image sitting in the unit's inactive OTA slot &nbsp;&#8226;&nbsp; "
+"<b>Installed</b> = what it is running now. An amber Installed box means GitHub has a newer build.</p>"
+"<div class='ver-wrap' id='verTbl'></div>"
+"<label class='ver-cfg'>ESPNowRelay address (optional, this browser only)"
+"<input id='verRelay' type='text' placeholder='e.g. 192.168.1.103' oninput='verSaveRelay()'></label>"
+"<div class='prog' id='verSts'></div>"
+"<button class='up' onclick='verRefresh()'>Refresh Versions</button>"
+"</div>"
 "<div class='ota-wrap gh-card'>"
 "<h3>Install from GitHub Releases</h3>"
 "<p>Fetch and flash a release straight from <code>github.com/SEspe/RemoteStart</code> &mdash; no manual download needed.</p>"
@@ -387,7 +412,8 @@ static const char INDEX_HTML_TMPL[] =
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
 "if(id==='timer')fetchTimer();"
 "if(id==='debug'){fetchStatus();fetchSys();}"
-"if(id==='wifinet')fetchIpCfg();}"
+"if(id==='wifinet')fetchIpCfg();"
+"if(id==='ota'&&!g_verLoaded){g_verLoaded=true;verRefresh();}}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
 "function row(n,v){return '<div class=\"row\"><span>'+n+'</span>'+led(v)+'</div>';}"
 "function txtRow(n,v){return '<div class=\"row\"><span>'+n+'</span><span>'+v+'</span></div>';}"
@@ -499,6 +525,59 @@ static const char INDEX_HTML_TMPL[] =
 "xhr.onload=()=>{p.textContent=xhr.status===200?'Success! Rebooting…':'Error: '+xhr.status;};"
 "xhr.onerror=()=>{p.textContent='Upload error';};"
 "xhr.send(f);}"
+/* ── OTA tab: firmware version table ───────────────────────────────────────
+ * MasterRemote's table covers all four units. Its own row comes from
+ * /api/version locally; SlaveHonda's and SlaveWallas's from the same endpoint
+ * on their addresses (taken from /api/nodes, so it follows a DHCP move);
+ * ESPNowRelay is not in the ESP-NOW roster at all -- the relay is deliberately
+ * transparent and never announces itself to Master -- so its address is typed
+ * once and kept in the browser's localStorage rather than adding an ESP-NOW
+ * message type to a repeater whose whole point is that it changes nothing. */
+"var VER_ROWS=[],g_verLoaded=false;"
+"function verEsc(s){return String(s).replace(/[&<>\"']/g,'');}"
+"function verNum(v){return String(v||'').replace(/^v/,'').split('.').map(function(x){"
+"return parseInt(x,10)||0;});}"
+"function verOlder(a,b){var A=verNum(a),B=verNum(b),n=Math.max(A.length,B.length);"
+"for(var i=0;i<n;i++){var x=A[i]||0,y=B[i]||0;if(x!==y)return x<y;}return false;}"
+"function verCell(l,v,c){return '<td><span class=\"ver-l\">'+l+'</span>"
+"<span class=\"ver-v '+(v?c:'na')+'\">'+(v?'v'+verEsc(v):'\\u2014')+'</span></td>';}"
+"function verRow(u){"
+"var upd=u.gh&&u.installed&&verOlder(u.installed,u.gh);"
+"return '<tr><td class=\"ver-u\">'+verEsc(u.name)+'</td>'+"
+"verCell('GitHub',u.gh,'')+verCell('Stored',u.stored,'')+"
+"verCell('Installed',u.installed,upd?'old':'')+'</tr>';}"
+"function verRender(){document.getElementById('verTbl').innerHTML="
+"'<table class=\"ver\">'+VER_ROWS.map(verRow).join('')+'</table>';}"
+/* Never rejects: an unreachable or unconfigured unit resolves to null and just
+ * leaves its cells blank, instead of failing the whole table. */
+"function verFetch(u,ms){return new Promise(function(res){"
+"if(u===null){res(null);return;}"
+"var c=new AbortController(),t=setTimeout(function(){c.abort();},ms);"
+"fetch(u,{signal:c.signal}).then(function(r){return r.ok?r.json():null;})"
+".then(function(j){clearTimeout(t);res(j);})"
+".catch(function(){clearTimeout(t);res(null);});});}"
+"function verSaveRelay(){try{localStorage.setItem('verRelayAddr',"
+"document.getElementById('verRelay').value.trim());}catch(e){}}"
+"function verInitRelay(){try{document.getElementById('verRelay').value="
+"localStorage.getItem('verRelayAddr')||'';}catch(e){}}"
+"function verRefresh(){"
+"var sts=document.getElementById('verSts');sts.textContent='Reading versions\\u2026';"
+"var rows=[{name:'" FIRMWARE_NAME "',base:''},{name:'SlaveHonda',base:null},"
+"{name:'SlaveWallas',base:null},{name:'ESPNowRelay',base:null}];"
+"verFetch('/api/nodes',5000).then(function(n){"
+"if(n&&n.h&&n.h.ip)rows[1].base='http://'+n.h.ip;"
+"if(n&&n.w&&n.w.ip)rows[2].base='http://'+n.w.ip;"
+"var ra='';try{ra=(localStorage.getItem('verRelayAddr')||'').trim();}catch(e){}"
+"if(ra)rows[3].base='http://'+ra;"
+"return Promise.all([verFetch('/api/ota/github/latest',15000)].concat("
+"rows.map(function(r){return verFetch(r.base===null?null:r.base+'/api/version',6000);})));"
+"}).then(function(res){"
+"var gh=res[0]||{};"
+"VER_ROWS=rows.map(function(r,i){var v=res[i+1]||{};"
+"return {name:r.name,gh:gh[r.name]||'',installed:v.installed||'',stored:v.stored||''};});"
+"verRender();"
+"sts.textContent='Updated '+new Date().toLocaleTimeString()+"
+"(res[0]?'':' \\u2014 GitHub unreachable');});}"
 "var g_ghReleases=[],g_ghPollTimer=null;"
 "function ghRefresh(){"
 "var sts=document.getElementById('ghSts');"
@@ -622,6 +701,7 @@ static const char INDEX_HTML_TMPL[] =
 "fetchDbg();"
 "buildTimer();"
 "fetchTimer();"
+"verInitRelay();"
 "</script></body></html>";
 
 /* ── Helpers ────────────────────────────────────────────────────────────────── */
@@ -1188,6 +1268,171 @@ static esp_err_t h_ota_gh_releases(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* Unit names as they appear in release asset filenames ("<unit>_v<ver>.bin",
+ * see .github/workflows/release.yml). Order fixes the JSON key order of
+ * /api/ota/github/latest; every unit builds the full four-unit answer so the
+ * handler is identical across the four firmwares, even though only
+ * MasterRemote's page reads more than its own key. */
+static const char *const GH_UNITS[] = { "MasterRemote", "SlaveHonda", "SlaveWallas", "ESPNowRelay" };
+#define GH_UNIT_COUNT (sizeof(GH_UNITS)/sizeof(GH_UNITS[0]))
+
+/* GET /api/ota/github/latest ── newest published version per unit, e.g.
+ * {"MasterRemote":"1.6.13","SlaveHonda":"1.4.11",...}; a unit with no matching
+ * asset in the fetched page of releases gets "".
+ *
+ * The listing is newest-first, so the first asset seen for a unit is its
+ * latest, and the scan can stop as soon as all four are known (normally within
+ * the first release, since a unified v* tag carries all four bins). Streams
+ * byte-by-byte for the same heap reason as h_ota_gh_releases above -- only
+ * browser_download_url is captured here, since the version is part of the
+ * asset filename. */
+static esp_err_t h_ota_gh_latest(httpd_req_t *req)
+{
+    char latest[GH_UNIT_COUNT][24];
+    for (size_t u = 0; u < GH_UNIT_COUNT; u++) latest[u][0] = '\0';
+    size_t found = 0;
+
+    esp_http_client_config_t cfg = {
+        .url = GH_RELEASES_URL,
+        .crt_bundle_attach = esp_crt_bundle_attach,
+        .timeout_ms = 10000,
+    };
+    esp_http_client_handle_t client = esp_http_client_init(&cfg);
+    if (!client) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "HTTP client init failed");
+        return ESP_OK;
+    }
+    esp_http_client_set_header(client, "User-Agent", "RemoteStart-ESP32");
+    esp_http_client_set_header(client, "Accept", "application/vnd.github+json");
+
+    if (esp_http_client_open(client, 0) != ESP_OK) {
+        esp_http_client_cleanup(client);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "GitHub connection failed");
+        return ESP_OK;
+    }
+    esp_http_client_fetch_headers(client);   /* -1 on a chunked body; only the status matters */
+    int status = esp_http_client_get_status_code(client);
+    if (status != 200) {
+        esp_http_client_close(client);
+        esp_http_client_cleanup(client);
+        char msg[64];
+        snprintf(msg, sizeof(msg), "GitHub API returned HTTP %d", status);
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, msg);
+        return ESP_OK;
+    }
+
+    gh_key_t k_url = { "\"browser_download_url\":\"", 24, 0 };
+    bool   cap = false;
+    size_t caplen = 0;
+    char   url[220];
+    char   buf[512];
+    int    r;
+    const size_t dlen = strlen(GH_ASSET_URL_PREFIX);
+
+    while (found < GH_UNIT_COUNT && (r = esp_http_client_read(client, buf, sizeof(buf))) > 0) {
+        for (int i = 0; i < r && found < GH_UNIT_COUNT; i++) {
+            char c = buf[i];
+
+            if (cap) {
+                if (c != '"') {
+                    if (caplen < sizeof(url) - 1) url[caplen++] = c;
+                    continue;
+                }
+                url[caplen] = '\0';
+                cap = false;
+
+                const char *slash = strrchr(url, '/');
+                const char *base  = slash ? slash + 1 : url;
+                size_t blen = strlen(base);
+                if (strncmp(url, GH_ASSET_URL_PREFIX, dlen) == 0 &&
+                    blen > 4 && strcmp(base + blen - 4, ".bin") == 0) {
+                    for (size_t u = 0; u < GH_UNIT_COUNT; u++) {
+                        size_t ulen = strlen(GH_UNITS[u]);
+                        if (blen <= ulen + 2 || strncmp(base, GH_UNITS[u], ulen) != 0 ||
+                            base[ulen] != '_' || base[ulen + 1] != 'v') continue;
+                        if (latest[u][0]) break;   /* older release of a unit already recorded */
+                        size_t vlen = blen - 4 - (ulen + 2);
+                        if (vlen == 0 || vlen >= sizeof(latest[u])) break;
+                        /* Restrict to version characters: this ends up in a JSON
+                         * body, and the filename comes off the network. */
+                        bool ok = true;
+                        for (size_t k = 0; k < vlen && ok; k++) {
+                            char v = base[ulen + 2 + k];
+                            ok = (v >= '0' && v <= '9') || (v >= 'a' && v <= 'z') ||
+                                 (v >= 'A' && v <= 'Z') || v == '.' || v == '-' || v == '_';
+                        }
+                        if (!ok) break;
+                        memcpy(latest[u], base + ulen + 2, vlen);
+                        latest[u][vlen] = '\0';
+                        found++;
+                        break;
+                    }
+                }
+                /* fall through so the closing quote still feeds the matcher */
+            }
+
+            if (gh_key_feed(&k_url, c)) { cap = true; caplen = 0; }
+        }
+    }
+    esp_http_client_close(client);
+    esp_http_client_cleanup(client);
+
+    char out[240];
+    snprintf(out, sizeof(out), "{\"%s\":\"%s\",\"%s\":\"%s\",\"%s\":\"%s\",\"%s\":\"%s\"}",
+             GH_UNITS[0], latest[0], GH_UNITS[1], latest[1],
+             GH_UNITS[2], latest[2], GH_UNITS[3], latest[3]);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, out);
+    return ESP_OK;
+}
+
+/* Copies a fixed-size esp_app_desc_t text field into a NUL-terminated,
+ * JSON-safe buffer. The field is not guaranteed to be terminated, and the
+ * passive slot can hold an image built by anything, so bytes outside plain
+ * printable ASCII (and the two characters that would break the JSON body) are
+ * dropped rather than trusted. */
+static void ver_sanitize(char *dst, size_t cap, const char *src, size_t src_len)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < src_len && src[i] && n < cap - 1; i++) {
+        unsigned char c = (unsigned char)src[i];
+        if (c >= 0x20 && c < 0x7f && c != '"' && c != '\\') dst[n++] = (char)c;
+    }
+    dst[n] = '\0';
+}
+
+/* GET /api/version ── the three versions the OTA tab's table shows for this
+ * unit: what it runs now, and what is left in the inactive OTA slot (the
+ * previous image, still bootable). "stored" is empty when that slot has never
+ * been written or holds no valid app image.
+ *
+ * Served with an open CORS header on purpose: MasterRemote's OTA tab fetches
+ * this same endpoint from the other units' addresses to fill its four-unit
+ * table, which is a cross-origin request from the browser's point of view. The
+ * response is read-only version information on a LAN-only device. */
+static esp_err_t h_version(httpd_req_t *req)
+{
+    char stored[40] = "", stored_name[40] = "";
+    esp_app_desc_t desc;
+    const esp_partition_t *nxt = esp_ota_get_next_update_partition(NULL);
+    if (nxt && esp_ota_get_partition_description(nxt, &desc) == ESP_OK) {
+        ver_sanitize(stored, sizeof(stored), desc.version, sizeof(desc.version));
+        ver_sanitize(stored_name, sizeof(stored_name), desc.project_name, sizeof(desc.project_name));
+    }
+    const esp_partition_t *run = esp_ota_get_running_partition();
+
+    char buf[260];
+    snprintf(buf, sizeof(buf),
+             "{\"name\":\"%s\",\"installed\":\"%s\",\"stored\":\"%s\","
+             "\"storedName\":\"%s\",\"running\":\"%s\"}",
+             FIRMWARE_NAME, FIRMWARE_VERSION, stored, stored_name,
+             run ? run->label : "");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
 /* Background task performing the actual download+flash for a GitHub-release
  * install, kicked off by h_ota_gh_install below. */
 static void gh_ota_task(void *arg)
@@ -1535,7 +1780,9 @@ esp_err_t web_server_start(void)
         { .uri="/api/ipconfig/save", .method=HTTP_POST, .handler=h_ipcfg_save },
         { .uri="/api/reboot",        .method=HTTP_POST, .handler=h_reboot     },
         { .uri="/ota/upload",      .method=HTTP_POST, .handler=h_ota_upload  },
+        { .uri="/api/version",       .method=HTTP_GET,  .handler=h_version    },
         { .uri="/api/ota/github/releases", .method=HTTP_GET,  .handler=h_ota_gh_releases },
+        { .uri="/api/ota/github/latest",   .method=HTTP_GET,  .handler=h_ota_gh_latest   },
         { .uri="/api/ota/github/install",  .method=HTTP_POST, .handler=h_ota_gh_install  },
         { .uri="/api/ota/github/progress", .method=HTTP_GET,  .handler=h_ota_gh_progress },
     };

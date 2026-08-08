@@ -55,6 +55,8 @@ idf.py -p COMx flash
 
 ## OTA Update
 
+The OTA Update tab opens with a **Firmware Versions** table — for each unit, the newest version published on GitHub, the version stored in its inactive OTA slot (the previous image), and the version installed and running. An amber *Installed* box means GitHub has something newer. MasterRemote lists all four units in one table; the other units show themselves. ESPNowRelay isn't part of the ESP-NOW roster, so type its address once into the field under MasterRemote's table (remembered by your browser) to include it.
+
 Manual upload:
 1. `idf.py build`
 2. Open `http://<device-ip>/` → **OTA Update** tab

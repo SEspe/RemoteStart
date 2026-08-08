@@ -1,9 +1,16 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.48  
+**Version:** 1.49  
 **Author:** SEspe  
 **Date:** 2026-08-08  
 **Changelog:**
+- v1.49 — **Firmware Versions table on the OTA tab: GitHub / Stored / Installed side by side, on all four units** (§6.6, §7.3). Each unit's OTA tab now opens with a version card showing what the newest published release offers for it (**GitHub**), what sits in its inactive OTA slot (**Stored** — the previous image, still bootable), and what it is running (**Installed**); the Installed box turns amber when GitHub has a newer build. **MasterRemote's card lists all four units in one table**, like the reference layout the feature was modelled on.
+  - **New `GET /api/version`** on every unit: `{"name","installed","stored","storedName","running"}`. `stored` comes from `esp_ota_get_partition_description()` on `esp_ota_get_next_update_partition()`, and is empty when that slot has never been written or holds no valid image. Served with `Access-Control-Allow-Origin: *` on purpose — MasterRemote's page fetches this same endpoint from the other units' addresses, which is cross-origin from the browser's point of view; the payload is read-only version data on a LAN-only device.
+  - **New `GET /api/ota/github/latest`** on every unit: the newest published version per unit, `{"MasterRemote":"…","SlaveHonda":"…","SlaveWallas":"…","ESPNowRelay":"…"}`, parsed out of the `<Unit>_v<ver>.bin` asset filenames. Reuses v1.48's streaming scanner (never materialises the listing) and captures only `browser_download_url`, stopping as soon as all four are known — normally inside the first release, since a unified `v*` tag carries all four bins. All four firmwares carry the identical four-unit handler even though only MasterRemote's page reads more than its own key.
+  - **`PROJECT_VER` is now derived from `main/version.h` in each unit's top-level `CMakeLists.txt`**, so the app descriptor baked into the image carries `FIRMWARE_VERSION`. Without this, ESP-IDF fills the descriptor from `git describe`, which says nothing about the per-unit firmware version — and the descriptor is the only way to read a *passive* partition's version. **Consequence on first deploy: the Stored column shows a `git describe`-style string (or blank) until each unit has been updated twice**, since the image already in the passive slot predates this change.
+  - **How MasterRemote resolves the other three addresses:** SlaveHonda and SlaveWallas come from `/api/nodes` (so the table follows a DHCP move), while **ESPNowRelay is deliberately absent from the ESP-NOW roster** — the repeater is transparent and never announces itself (§13) — so its address is typed once into a field on the card and kept in the browser's `localStorage`. That was chosen over adding a relay→Master ESP-NOW message type purely to feed a display, since the repeater's whole design premise is that it changes nothing about the other units' firmware. A blank or unreachable address just leaves that row's cells empty; per-unit fetches are abort-timeout bounded so one silent unit can't stall the table.
+  - ESPNowRelay's `max_uri_handlers` raised 16 → 20 for the two new routes (the other three units already had margin).
+  MasterRemote 1.6.13, SlaveHonda 1.4.11, SlaveWallas 1.6.11, ESPNowRelay 1.1.10. No NVS, data-model, or wire-format change.
 - v1.48 — **Two independent defects were breaking the GitHub-release OTA feature; both are fixed, plus a "Go GitHub" link and MasterRemote's missing Manual GPIO Test card.** User reported the feature not working on all units. Probing SlaveHonda live separated it into two unrelated causes that had been mistaken for one:
   - **(1) Release listing ran out of heap.** `GET /api/ota/github/releases` buffered the whole API response and handed it to `cJSON`. Each published release carries four per-unit assets of ~20 JSON fields, so the listing had grown past **68 KB**, and a full parse needs the raw buffer plus a tree several times its size against a ~200 KB heap. MasterRemote failed **3/3** with `Bad GitHub response` (the `cJSON_Parse()` branch — the malloc succeeded, the parse then had nothing left), its heap low-water plunging ~98 KB per attempt, while SlaveHonda with a little more headroom still squeaked through **9/9**. That difference is why it looked intermittent. Rewritten as a **byte-at-a-time streaming scanner** (`gh_key_feed()`) that never materialises the document: it watches for four literal keys, exploiting GitHub's field order (`tag_name`/`published_at` precede a release's `assets`; within an asset `size` precedes `browser_download_url`), takes the asset filename from the URL's own last path segment, and dedupes by tag so one asset per release is emitted. Peak cost no longer depends on the release count — which matters because the payload grows with every release, so trimming `per_page` would only have postponed this. Output JSON is byte-identical to the old implementation (verified live: same 1348 bytes, same 7 releases). Also now tolerates a chunked response, since the scanner no longer needs `Content-Length`, and a non-200 reply reports the actual status code instead of a generic string.
   - **(2) Outbound TLS could not get a socket.** With the listing fixed, `POST /api/ota/github/install` still failed instantly with `begin:ESP_ERR_HTTP_CONNECT`, trace `le=32770` = `0x8002` = **`ESP_ERR_ESP_TLS_CANNOT_CREATE_SOCKET`** — `socket()` itself failing, nothing to do with TLS or the buffer sizes v1.46 fixed. `CONFIG_LWIP_MAX_SOCKETS` was **10**, while httpd holds a listener, a control socket, and up to 7 sessions = 9, leaving exactly **one** descriptor for everything else. A browser parked on a polling tab fills all 7 session slots (they are keep-alive and `lru_purge_enable` only reclaims one when a *new* connection needs it, so an idle wait does not help — confirmed: still failing after 60 s quiet), so the device had no descriptor left to open its own outbound connection. Proven by a discriminating test: after a reboot with no preceding traffic the identical install ran **0%→100% success**. Fixed by raising `CONFIG_LWIP_MAX_SOCKETS` to **16** in all four `sdkconfig.defaults`, and `cfg.max_open_sockets` is now set explicitly with a comment recording that it is one half of a budget, so a future change to either number is visibly a trade against the other. This affected *both* the listing fetch and the install, so it was very likely also a contributor to the user-visible "Refresh Releases doesn't work".
@@ -379,7 +386,7 @@ Access at: `http://<MasterRemote-IP>/`
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
 | WiFi (v1.37) | WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open |
-| OTA Update   | Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | Manual   |
+| OTA Update   | Firmware Versions table for **all four units** — GitHub / Stored / Installed (v1.49, §7.3) + Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | On tab open + manual |
 
 The Nodes tab is a genuine HTML `<table>` (one row per node) driven directly by MasterRemote's in-RAM peer roster (§3.2), so it reflects real discovered nodes rather than fixed content — a node that hasn't registered yet (e.g. SlaveHonda still mid channel-scan) shows "—" for MAC/IP/RSSI/Channel/FW until its first heartbeat arrives. The IP cell is a clickable link (v1.43) that opens the slave's own web UI in a new tab, when an IP is known. "Connected" = a heartbeat was received within the last 30 s (node stale timeout, §3.4); IP shows blank/"—" for a node currently running WiFi-less (SlaveHonda in ESP-NOW fallback); RSSI/Channel come from the slave's own last-heard-from-Master reading (§3.3), not MasterRemote's own link.
 
@@ -419,6 +426,11 @@ HTTP endpoints:
 | GET    | `/api/ipconfig`     | JSON: configured SSID + associated AP SSID (v1.47), saved DHCP/static IP config, currently-active IP/mask/gateway (v1.37) + DNS (v1.47) |
 | POST   | `/api/ipconfig/save`| Save IP config (`mode=dhcp\|static&ip=&mask=&gw=&dns=`) to NVS, restart (v1.37) |
 | POST   | `/api/reboot`       | Manual reboot, no state change (v1.38) |
+| GET    | `/api/version`      | JSON: this unit's installed + stored (inactive-slot) version; CORS-open (v1.49, §7.3) |
+| GET    | `/api/ota/github/latest` | JSON: newest published version per unit, from the release asset names (v1.49, §7.3) |
+| GET    | `/api/ota/github/releases` | JSON: recent releases carrying a binary for this unit (v1.45) |
+| POST   | `/api/ota/github/install`  | Start a background download+flash of a release asset (v1.45) |
+| GET    | `/api/ota/github/progress` | JSON: install state/percent/error/trace (v1.45) |
 | POST   | `/ota/upload`       | Raw binary OTA upload                  |
 
 ### 6.2 SlaveHonda & SlaveWallas — Local Web UI
@@ -430,9 +442,9 @@ Access at: `http://<Slave-IP>/`
 | Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
 | Debug (v1.40, renamed from "Debug GPIO") | Radio Link card (own MAC, v1.42; WiFi AP RSSI + channel, v1.33; ESP-NOW RSSI + channel + MasterRemote's MAC, v1.41/v1.42) + System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
 | WiFi (v1.37) | WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open | Both |
-| OTA Update | Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | Manual   | Both  |
+| OTA Update | Firmware Versions row for this unit — GitHub / Stored / Installed (v1.49, §7.3) + Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | On tab open + manual | Both  |
 
-HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/ota/upload`.
+HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/api/version` + `/api/ota/github/latest` (v1.49, §7.3), `/api/ota/github/releases|install|progress` (v1.45), `/ota/upload`.
 
 `/api/gpio/set` forces a manipulable pin to OUTPUT and drives it (active, overrides normal operation). `/api/gpio/status` is read-only (`gpio_get_level()` on every GPIO, safe to call even on reserved pins since it never reconfigures anything) and backs the Debug tab's status dots — every pin gets a dot, only the non-reserved subset gets ON/OFF buttons. The non-reserved/manipulable set differs per chip:
 
@@ -500,6 +512,24 @@ The device itself can fetch and flash a release binary, without downloading anyt
 
 Requires the device to have WiFi internet access to `api.github.com`/`github.com` (not just LAN access to your browser) — if that's unavailable, use the manual upload path instead.
 
+### 7.3 Firmware Versions table (since v1.49)
+
+The OTA tab opens with a **Firmware Versions** card, three values per unit:
+
+| Column | Source | Meaning |
+|--------|--------|---------|
+| **GitHub** | `GET /api/ota/github/latest`, parsed from the `<Unit>_v<ver>.bin` asset names | Newest version published for that unit |
+| **Stored** | `GET /api/version` → `esp_ota_get_partition_description()` on the **inactive** OTA slot | The previous image, still on flash and still bootable |
+| **Installed** | `GET /api/version` → `FIRMWARE_VERSION` | What the unit is running now |
+
+The Installed box turns amber when GitHub offers a newer version (dotted-numeric comparison). An empty cell means "unknown": no matching release asset, an OTA slot never written, or a unit that didn't answer.
+
+**MasterRemote shows all four units in one table.** Its own row is local; SlaveHonda's and SlaveWallas's come from `/api/version` on the addresses in `/api/nodes`; ESPNowRelay is not part of the ESP-NOW roster (§13 — the repeater is transparent by design and never announces itself), so its address is typed once into the field under the table and remembered by the browser (`localStorage`, per-browser, not device state). The other three units show a single row for themselves.
+
+Because MasterRemote's page reads `/api/version` on other hosts, that endpoint — and only that endpoint — carries `Access-Control-Allow-Origin: *`.
+
+> The Stored value is only as good as the app descriptor in the passive slot. Since v1.49 each unit's `CMakeLists.txt` sets `PROJECT_VER` from `main/version.h` so the descriptor carries the real firmware version; images built before that carry a `git describe` string instead, so a freshly updated unit shows an odd-looking Stored value until it has been updated twice.
+
 ---
 
 ## 8. Versioning & Release Artifacts
@@ -510,6 +540,8 @@ Each unit's version is defined independently in `main/version.h`:
 #define FIRMWARE_VERSION  "1.0.0"
 #define FIRMWARE_NAME     "MasterRemote"   // SlaveHonda / SlaveWallas
 ```
+
+Since v1.49 each unit's top-level `CMakeLists.txt` reads that header at configure time and sets `PROJECT_VER` from it, so the same string ends up in the app descriptor inside the image — that is what makes a *passive* partition's version readable at runtime (§7.3). `CMAKE_CONFIGURE_DEPENDS` on `main/version.h` keeps it in step, so a version bump re-runs CMake rather than baking a stale descriptor.
 
 ### Version scheme: `MAJOR.MINOR.PATCH`
 
@@ -731,5 +763,5 @@ Because ESP-NOW unicast is only delivered to the addressed MAC, the relay never 
   - **Debug** — *Radio Link* card (renamed from "WiFi Link" v1.42: own MAC, AP RSSI + channel, plus a per-peer ESP-NOW RSSI + MAC summary for MasterRemote/SlaveHonda/SlaveWallas) + *System* card (§10.1). 2 s auto-refresh while open.
   - **WiFi** — WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields), same as the other three units (§4/§6.1/§6.2).
   - **OTA Update** — same as all other units.
-- **HTTP endpoints:** `/`, `/api/status`, `/api/sysinfo`, `/wifi-setup`, `/wifi-save`, `/api/scan`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/ota/upload`.
+- **HTTP endpoints:** `/`, `/api/status`, `/api/sysinfo`, `/wifi-setup`, `/wifi-save`, `/api/scan`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/api/version` + `/api/ota/github/latest` (v1.49, §7.3), `/api/ota/github/releases|install|progress` (v1.45), `/ota/upload`.
 - All accumulated platform lessons are applied from day one: `WIFI_PS_NONE` + max TX power (§v1.32), indefinite post-boot reconnect (§v1.25), URL-decoded portal credentials (§v1.28), handler-cap headroom + checked route registration (§v1.27), self-sampled heap low-water mark with timestamp (§10.1).
