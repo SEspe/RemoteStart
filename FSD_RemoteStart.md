@@ -1,9 +1,10 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.50  
+**Version:** 1.51  
 **Author:** SEspe  
 **Date:** 2026-08-08  
 **Changelog:**
+- v1.51 — **Collapsed the ~70 px of blank space under the "Install from GitHub Releases" card's buttons**, on all four units. The card reserved permanent room for controls that only appear once an install is under way: a `<br>` after the always-hidden release `<select>`, plus two `.prog` status lines each holding `min-height:1.2em` while empty. Removed the `<br>` (the select is switched to `display:block` when populated, so the Install button still lands on its own line) and added `.prog:empty{display:none}`, which collapses every idle status line on the page rather than just this card's. Purely CSS/markup; no endpoint, JSON, or NVS change. MasterRemote 1.6.15, SlaveHonda 1.4.13, SlaveWallas 1.6.13, ESPNowRelay 1.1.12.
 - v1.50 — **Two fixes to v1.49's version table, both reported from the live UI.**
   - **MasterRemote showed no versions for the slaves.** v1.49 had the page fetch `/api/version` from each slave's own address; a browser treats `http://<slave-ip>/` as a different origin from the page it loaded off MasterRemote, and those reads came back empty in practice even with `Access-Control-Allow-Origin: *` on the response. Replaced by **`GET /api/versions[?relay=<ip>]` on MasterRemote**, which collects the other units' `/api/version` itself over plain LAN HTTP (4 s timeout each, so one silent unit can't stall the table) and returns all four rows to a same-origin caller. Slave addresses still come from the ESP-NOW roster; ESPNowRelay's is still typed once into the card and kept in the browser, now passed through as a query parameter (validated against an IPv4 alphabet before it goes into a URL). `/api/version` stays on every unit — it is the data source, and still CORS-open for direct use.
   - **24-hour clock everywhere.** `new Date().toLocaleTimeString()` follows the viewing browser's locale and was rendering as `7:43:39 PM`. All UI timestamps (Status/Nodes "Updated:", the version card) now go through one `hms()` helper producing zero-padded `HH:MM:SS`, on all four units.

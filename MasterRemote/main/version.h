@@ -1,6 +1,6 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "1.6.14"
+#define FIRMWARE_VERSION    "1.6.15"
 #define FIRMWARE_NAME       "MasterRemote"
 #define WIFI_AP_SSID        "MasterRemote-Config"
 #define WIFI_AP_PASSWORD    "honda1234"

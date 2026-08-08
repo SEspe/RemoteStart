@@ -254,6 +254,10 @@ static const char INDEX_HTML_TMPL[] =
 ".ota-wrap p{font-size:.85rem;color:#555;margin-bottom:14px}"
 "input[type=file]{display:block;margin-bottom:12px}"
 ".prog{margin-top:10px;font-size:.85rem;color:#e94560;min-height:1.2em}"
+/* An idle status line reserves no space -- the GitHub card sat on ~70px of
+ * blank rows for a select, a button and two progress lines that only appear
+ * once an install is under way. */
+".prog:empty{display:none}"
 "button.up{padding:8px 20px;background:#e94560;border:none;border-radius:5px;"
 "color:#fff;cursor:pointer;font-size:.9rem}"
 "a.up.gh-link{display:inline-block;padding:8px 20px;border-radius:5px;font-size:.9rem;"
@@ -392,7 +396,7 @@ static const char INDEX_HTML_TMPL[] =
 "<button class='up' onclick='ghRefresh()'>Refresh Releases</button> "
 "<a class='up gh-link' href='" GH_REPO_URL "' target='_blank' rel='noopener'>Go GitHub</a>"
 "<div class='prog' id='ghSts'></div>"
-"<select id='ghSel' style='display:none'></select><br>"
+"<select id='ghSel' style='display:none'></select>"
 "<button class='up' id='ghInstallBtn' style='display:none' onclick='ghInstall()'>Install Selected</button>"
 "<div class='gh-bar-wrap' id='ghBarWrap'><div class='gh-bar' id='ghBar'></div></div>"
 "<div class='prog' id='ghProg'></div>"
