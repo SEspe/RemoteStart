@@ -1,9 +1,12 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.51  
+**Version:** 1.52  
 **Author:** SEspe  
-**Date:** 2026-08-08  
+**Date:** 2026-08-10  
 **Changelog:**
+- v1.52 — **Hardware documentation: new [docs/HARDWARE.md](docs/HARDWARE.md) plus the three source drawings under `docs/hardware/`.** Documentation only — no firmware, endpoint or NVS change, and no unit version bump. Covers MasterRemote's opto-isolated Venus (Raspberry Pi) interface board, the manual-switch/indicator field wiring and terminal-block assignments, the end-to-end Honda start flow through to the EU7000is remote connector, and the relay timing.
+  - **Corrected §2.2: GPIO15 (Honda Start, Victron relay) is active LOW, not active HIGH.** The table had claimed active HIGH since v1.14 while `main.c` has always read it as `!gpio_get_level(PIN_HONDA_START)`. The schematic settles it — GPIO15 is fed by optocoupler U1's open collector with an external 10 kΩ pull-up, and the internal pull-up is disabled in `gpio_init()`. Confirmed live on 2026-08-10: with the system idle, `/api/gpio/status` reports GPIO15 = 1 and GPIO4 = 1, which is only possible with external pull-ups fitted, and `/api/status` correspondingly reads `pHS:false`/`pWS:false`. Both Victron inputs use the same polarity; the old text's "opposite polarity of GPIO15" note on the GPIO4 row was wrong for the same reason and is removed. No code changed — the firmware was already correct, only the document was not.
+  - The **redrawn** schematic (`MasterRemote_interface_schematic.png`) was found to contain five transcription errors relative to the hand-marked original, catalogued in Hardware Guide §6 — most consequentially a right-header pin-label list with `23` and `15` duplicated and `5`/`2` missing, which shifts every row from the third down and makes the Wallas opto appear to land on GPIO16 rather than GPIO4. The marked original photo is kept alongside it and is the one to wire from until the redraw is fixed.
 - v1.51 — **Collapsed the ~70 px of blank space under the "Install from GitHub Releases" card's buttons**, on all four units. The card reserved permanent room for controls that only appear once an install is under way: a `<br>` after the always-hidden release `<select>`, plus two `.prog` status lines each holding `min-height:1.2em` while empty. Removed the `<br>` (the select is switched to `display:block` when populated, so the Install button still lands on its own line) and added `.prog:empty{display:none}`, which collapses every idle status line on the page rather than just this card's. Purely CSS/markup; no endpoint, JSON, or NVS change. MasterRemote 1.6.15, SlaveHonda 1.4.13, SlaveWallas 1.6.13, ESPNowRelay 1.1.12.
 - v1.50 — **Two fixes to v1.49's version table, both reported from the live UI.**
   - **MasterRemote showed no versions for the slaves.** v1.49 had the page fetch `/api/version` from each slave's own address; a browser treats `http://<slave-ip>/` as a different origin from the page it loaded off MasterRemote, and those reads came back empty in practice even with `Access-Control-Allow-Origin: *` on the response. Replaced by **`GET /api/versions[?relay=<ip>]` on MasterRemote**, which collects the other units' `/api/version` itself over plain LAN HTTP (4 s timeout each, so one silent unit can't stall the table) and returns all four rows to a same-origin caller. Slave addresses still come from the ESP-NOW roster; ESPNowRelay's is still typed once into the card and kept in the browser, now passed through as a query parameter (validated against an IPv4 alphabet before it goes into a URL). `/api/version` stays on every unit — it is the data source, and still CORS-open for direct use.
@@ -93,6 +96,11 @@ MasterRemote and SlaveWallas connect to a local WiFi network for web-based monit
 
 ## 2. Hardware
 
+> **Wiring drawings live in [docs/HARDWARE.md](docs/HARDWARE.md)** — MasterRemote's opto-isolated
+> Venus interface board, the manual-switch and indicator field wiring, the EU7000is remote-connector
+> mapping, and the end-to-end Honda start flow. This section stays the pin-level reference; the
+> hardware guide is the schematic-level one.
+
 ### 2.1 Units
 
 | Unit         | MCU      | Function role                              | WiFi requirement |
@@ -111,11 +119,11 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 | GPIO | Direction    | Signal                             |
 |------|--------------|------------------------------------|
 |  2   | OUTPUT       | Onboard LED — heartbeat blink      |
-|  4   | INPUT        | Wallas Start — Victron Venus relay (**active LOW** on the current hardware revision, v1.29 — LOW = start demanded, HIGH = idle; opposite polarity of GPIO 15's Honda relay input) |
+|  4   | INPUT        | Wallas Start — Victron Venus relay (**active LOW**, v1.29 — LOW = start demanded, HIGH = idle), fed from optocoupler U2's open collector with an external 10 kΩ pull-up (R5) to 3V3; the internal pull-up is deliberately disabled |
 |  5   | INPUT PULLUP | Wallas Manual Start — maintained on/off toggle switch, **reconnected 2026-07-04 (v1.44)**, active HIGH like GPIO14's Honda manual switch — opposite polarity of GPIO4 (was unwired/obsolete v1.29–v1.43). OR'd into `g_wallas_start_cmd` as a plain level source alongside the Victron relay, web override, and weekly timer |
 | 13   | OUTPUT       | Honda Running Feedback LED         |
 | 14   | INPUT PULLUP | Honda Manual Start (push-button)   |
-| 15   | INPUT        | Honda Start — Victron Venus relay (active HIGH — HIGH = start demanded) |
+| 15   | INPUT        | Honda Start — Victron Venus relay (**active LOW** — LOW = start demanded, HIGH = idle), fed from optocoupler U1's open collector with an external 10 kΩ pull-up to 3V3; the internal pull-up is deliberately disabled. Same polarity as GPIO4's Wallas input. See [Hardware Guide §2.2](docs/HARDWARE.md#22-isolated-inputs-from-the-victron-venus-raspberry-pi) |
 
 ### 2.3 SlaveHonda Pin Assignments
 

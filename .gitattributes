@@ -23,3 +23,6 @@ Makefile       text eol=lf
 *.elf     binary
 *.hex     binary
 *.map     binary
+*.png     binary
+*.jpg     binary
+*.jpeg    binary
