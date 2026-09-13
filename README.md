@@ -69,7 +69,8 @@ Or, from GitHub Releases (device needs internet access):
 
 ## Documentation
 
-- [FSD_RemoteStart.md](FSD_RemoteStart.md) — full Functional Specification Document (behaviour, protocols, web UI, pin-level reference, changelog).
+- [FSD_RemoteStart.md](FSD_RemoteStart.md) — full Functional Specification Document (behaviour, protocols, web UI, pin-level reference).
+- [FSD_RemoteStart_CHANGELOG.md](FSD_RemoteStart_CHANGELOG.md) — the change record, one entry per version.
 - [docs/HARDWARE.md](docs/HARDWARE.md) — hardware guide: MasterRemote's opto-isolated Victron Venus interface board, manual-switch and indicator wiring, terminal-block assignments, and the end-to-end Honda start flow through to the EU7000is remote connector. Source drawings are in [docs/hardware/](docs/hardware/).
 
 ## Author
