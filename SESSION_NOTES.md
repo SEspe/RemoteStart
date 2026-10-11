@@ -16,6 +16,7 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 | v1.59 | `a376c1f` | **Safety precautions + at-your-own-risk disclaimer** for connecting SlaveWallas to a heater: CAUTION block opening Hardware Guide §3, banner at the top of the guide, README "Safety and disclaimer" section. |
 | — | `cccbd90` | Hardware guide §3.2 links an **example (unverified) eBay listing** for the relay module. |
 | v1.60 | `fd59711` | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
+| — | `9b18acf` | README **screenshots** of SlaveWallas (standalone Status tab, Weekly Timer tab), taken by the user on 1.7.2; stored in `docs/screenshots/`. |
 
 ## Decisions the user made (don't re-ask)
 
@@ -39,6 +40,10 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 |------|----|-----|----------|
 | MasterRemote (spare board) | 192.168.10.224 | `30:AE:A4:4B:E1:78` | 1.8.2, input mask 5 (manual switches off — nothing wired) |
 | SlaveWallas | 192.168.10.220 | `98:A3:16:9D:8D:0C` | 1.7.2 |
+
+At the end of the session the test MasterRemote (.224) was **unplugged** and SlaveWallas was
+running standalone. Timer table: Sun 19:24–19:26 and Mon 19:22–19:25 saved but unticked, all
+other days empty, last change 19:41:07.
 
 A third bare ESP32 (`30:ae:a4:4c:31:b0`) was probed on COM12; its auto-reset doesn't work —
 hold BOOT, tap EN, release BOOT before flashing. The test MasterRemote beacons on channel 6:
