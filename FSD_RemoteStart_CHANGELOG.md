@@ -22,6 +22,8 @@ bumps, and an entry here land together.
 
 ---
 
+- v1.62 — **The ESP32-C6 relay module's relay is on GPIO19** — the pin SlaveWallas already drives, so the board runs the standard SlaveWallas release with no board setting. Confirmed on the bench (board MAC `98:A3:16:9D:8D:0C`, SlaveWallas 1.8.0, flashed with the browser flasher): three Start/Stop pulses through `/api/wallas/start|stop` gave three audible on/off clicks, with `relay` and GPIO19 following, active HIGH. Hardware Guide §3.2 updated from "not yet known"; GPIO18/GPIO23 have nothing attached on this board. Documentation only.
+
 - v1.61 — **Every unit answers on a fixed name, and the setup page takes you there by itself** (§4). MasterRemote 1.9.0, SlaveHonda 1.5.0, SlaveWallas 1.8.0, ESPNowRelay 1.3.0.
   - **Why:** after entering WiFi details in the portal the unit rebooted onto the home network at a DHCP address nobody was told; finding it meant digging through the router.
   - **mDNS + DHCP hostname on all four units:** `masterremote`, `slavehonda`, `slavewallas`, `espnowrelay` (`MDNS_HOSTNAME` in each `version.h`). The hostname is set on the STA netif before DHCP starts, so router client lists show it; mDNS (`espressif/mdns`, the same component as BirdBox) announces `<name>.local` and an `_http._tcp` service. Best-effort: a failed `mdns_init()` only logs. Same-subnet only.

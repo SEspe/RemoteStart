@@ -19,6 +19,7 @@ v1.54–v1.61; this file is the hand-over: what is where, what is verified, what
 | — | `9b18acf` | README **screenshots** of SlaveWallas (standalone Status tab, Weekly Timer tab), taken by the user on 1.7.2; stored in `docs/screenshots/`. |
 | v1.61 | `7a628cf`, **`v1.36.0`** | **`<unit>.local` + self-redirecting setup page:** DHCP hostname + mDNS on all four units (`masterremote`, `slavehonda`, `slavewallas`, `espnowrelay`); after Connect & Save / Save & Apply the Saved! page polls `<unit>.local` and opens it by itself; a note under each save button says so. MasterRemote 1.9.0, SlaveHonda 1.5.0, SlaveWallas 1.8.0, ESPNowRelay 1.3.0. The browser flasher serves these builds. |
 | — | `79b3815` | README Build & Flash: setup walk-through with each unit's `.local` address, when `.local` works, and two flasher troubleshooting notes ("Failed to initialize" → BOOT+EN; port busy → close the flasher's Logs & console). OTA section uses `<unit>.local`. |
+| v1.62 | (this commit) | **Relay module's relay = GPIO19, active HIGH** (three Start/Stop pulses → three clicks, user confirmed). The board runs standard SlaveWallas firmware; the bench SlaveWallas (.220) **is** this relay module. |
 
 ## Decisions the user made (don't re-ask)
 
@@ -73,10 +74,9 @@ and had to clean up.
    Check SlaveWallas `/api/status` for an active command before rebooting it.
 2. **Untested:** `.local` names and the redirect on MasterRemote, SlaveHonda and ESPNowRelay (built, not run — verified only on SlaveWallas); a local Start made while standalone being handed to Master when it returns;
    anything through ESPNowRelay (no relay on the bench).
-3. **New SlaveWallas board (ESP32-C6 relay module):** example listing (unverified) is linked in
-   Hardware Guide §3.2; the user has no link to their own purchase. Relay GPIO unknown. Find it on the bench
-   with Debug → Manual GPIO Test. If no button clicks it, it's on a strapping pin (4/5/8/9/15)
-   the tab hides — make those testable. If it isn't GPIO19, add a board setting to SlaveWallas.
+3. **New SlaveWallas board (ESP32-C6 relay module): relay GPIO found — GPIO19**, works with the
+   standard firmware. Remaining: wire it to the Wallas M26 (Hardware Guide §3.2 — read the
+   safety block first) and test at the heater while present.
 4. Manual-switch rewiring (above). Fix the redrawn MasterRemote schematic (hardware guide §6).
 5. FSD §12 still says MasterRemote's `max_uri_handlers` is 22 (it's 32) — stale line.
 
