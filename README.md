@@ -83,11 +83,34 @@ computer.
 2. Click the unit's button and pick its serial port.
 3. Choose **Erase device** when offered. A board that ran other firmware
    before can otherwise keep stale data that leaves its radio silent.
-4. When it reboots, continue with [First Startup](#first-startup) above.
+4. When it reboots, do the WiFi setup as in [First Startup](#first-startup):
+   join `<Unit>-Config` (password `honda1234`), open `http://192.168.4.1/wifi-setup`
+   in a normal browser tab, scan, pick your WiFi and press **Connect & Save**.
+   The page then takes you to the unit's own address by itself:
+
+   | Unit | Address after setup |
+   |------|---------------------|
+   | MasterRemote | `http://masterremote.local` |
+   | SlaveHonda | `http://slavehonda.local` |
+   | SlaveWallas | `http://slavewallas.local` |
+   | ESPNowRelay | `http://espnowrelay.local` |
+
+   These `.local` names (mDNS) work from a phone or PC on the **same network/subnet** as the
+   unit — Windows 10/11, macOS, iPhone, and Android roughly 12 and newer. Every unit also
+   registers the same name with your router, so it shows up by name in the router's client list
+   when `.local` doesn't work (older Android, or a PC on another subnet).
 
 MasterRemote and SlaveHonda are both plain ESP32, so the flasher can't tell
 which one you meant — make sure you press the right button. The C6 units are
 checked: their firmware is refused on any other chip.
+
+**If the flasher says "Failed to initialize":** the board didn't enter its download mode by
+itself (some boards' auto-reset doesn't work). Hold **BOOT**, tap **EN/RST**, release **BOOT**,
+then click the Flash button again. Afterwards press **EN/RST** once to start the new firmware.
+
+**If the serial port is "busy" or "in use":** only one program can have it open. The flasher's
+**Logs & console** view keeps it open while it's showing — close that dialog (or the tab)
+before using esptool, `idf.py` or another serial monitor.
 
 The page is for the initial flash only; every update after that goes over
 OTA (below). It is rebuilt from `master` by
@@ -111,11 +134,11 @@ The OTA Update tab opens with a **Firmware Versions** table — for each unit, t
 
 Manual upload:
 1. `idf.py build`
-2. Open `http://<device-ip>/` → **OTA Update** tab
+2. Open the unit's page — `http://<unit>.local/` (e.g. `http://slavewallas.local/`) or its IP — → **OTA Update** tab
 3. Upload `<Unit>/build/<Unit>.bin`
 
 Or, from GitHub Releases (device needs internet access):
-1. Open `http://<device-ip>/` → **OTA Update** tab → **Install from GitHub Releases**
+1. Open `http://<unit>.local/` (or the unit's IP) → **OTA Update** tab → **Install from GitHub Releases**
 2. Click **Refresh Releases**, pick a release, click **Install Selected**
 3. The device downloads and flashes it directly, then reboots
 
