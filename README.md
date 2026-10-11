@@ -37,6 +37,23 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 - **ESP-NOW RSSI on the slaves' own UI** — SlaveHonda/SlaveWallas's Debug tab "Radio Link" card now shows the ESP-NOW RSSI/channel of the last frame heard from MasterRemote, alongside the existing WiFi AP RSSI/channel — previously only visible remotely via MasterRemote's Nodes tab (see FSD §6.2, v1.41)
 - **MAC addresses visible on every unit's own Radio Link card** — each unit now shows its own STA MAC address; the slaves also show MasterRemote's MAC, and ESPNowRelay's Radio Link card (renamed from "WiFi Link") adds a per-peer ESP-NOW RSSI + MAC summary (MasterRemote/SlaveHonda/SlaveWallas) — previously MAC addresses were only visible remotely (MasterRemote's Nodes tab, ESPNowRelay's Peers table), never on a unit's own page (see FSD §6.1/§6.2/§13, v1.42)
 
+## Screenshots — SlaveWallas
+
+**Status tab, running standalone** (no MasterRemote heard for 30 s): the Mode line says
+*Standalone*, and **Start Wallas / Stop Wallas** drive the heater relay directly. With MasterRemote
+present the same buttons act as MasterRemote's own (FSD §3.5).
+
+![SlaveWallas Status tab in standalone mode](docs/screenshots/SlaveWallas_status_standalone.png)
+
+**Weekly Timer tab:** the same 7-day table as MasterRemote's, kept in sync with it (newest edit
+wins). The line under the clock says whether this table is driving the heater (standalone) or
+MasterRemote is; the clock line also shows when the table last changed.
+
+![SlaveWallas Weekly Timer tab](docs/screenshots/SlaveWallas_weekly_timer.png)
+
+On the Wallas M26 installation, *Wallas Running FB (p18)* has nothing connected — the heater's
+control terminals have no running signal (Hardware Guide §3.2) — so that dot stays off.
+
 ## First Startup
 
 1. Power on the unit
