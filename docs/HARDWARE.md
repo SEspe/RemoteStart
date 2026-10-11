@@ -1,6 +1,6 @@
 # Hardware Guide — RemoteStart
 
-**Version:** 1.0 — 2026-08-10
+**Version:** 1.1 — 2026-10-11 (Wallas heater terminals and SlaveWallas relay-module wiring, §3.1–3.2)
 
 This document covers the **physical/electrical** side of the system: what each unit is wired
 to, how a start demand travels from the Victron Venus (Raspberry Pi) to the Honda EU7000is
@@ -18,6 +18,8 @@ the live hardware** and the FSD is the one to correct.
 | [`hardware/HondaStart_overall_flow.jpg`](hardware/HondaStart_overall_flow.jpg) | End-to-end Honda start flow: Venus → MasterRemote → ESP-NOW → SlaveHonda → Rele1/Rele2 → EU7000is. Includes the relay timing diagram and the EU7000is remote-connector legend. |
 | [`hardware/MasterRemote_interface_schematic.png`](hardware/MasterRemote_interface_schematic.png) | Redrawn (clean) schematic of MasterRemote's interface board. **Has known transcription errors — see §6.** |
 | [`hardware/MasterRemote_interface_schematic_marked.jpg`](hardware/MasterRemote_interface_schematic_marked.jpg) | Photo of the original hand-marked drawing. **Authoritative where the two disagree**: it identifies the module as a LOLIN32 Lite, corrects the Wallas LED resistor to 1 kΩ, and adds the second pull-up (R2). |
+| [`hardware/Wallas_connector_onoff_thermostat.png`](hardware/Wallas_connector_onoff_thermostat.png) | The Wallas heater's 12 V control terminal block (1–6), with the two ways to control it from outside: simple on/off across terminals 4–5, or a changeover thermostat on 1–2–3. Norwegian notes; translated in §3.1. |
+| [`hardware/SlaveWallas_ESP32-C6_relay_module.png`](hardware/SlaveWallas_ESP32-C6_relay_module.png) | Product photo of the planned SlaveWallas board: ESP32-C6 single-relay module, DC 5–60 V supply, Type-C, BOOT/RST buttons. §3.2. |
 
 ---
 
@@ -217,6 +219,61 @@ feedback.
 
 > **GPIO12/13 on the ESP32-C6 are the native USB-Serial/JTAG D−/D+ pads.** Do not use them as
 > GPIO on SlaveWallas or ESPNowRelay; doing so breaks console/flash access at runtime.
+
+SlaveWallas also runs on its own when MasterRemote is absent (own Start/Stop and weekly timer,
+FSD §3.5). The wiring below is the same either way.
+
+### 3.1 Wallas heater control terminals
+
+The heater has a six-way 12 V control terminal block
+([drawing](hardware/Wallas_connector_onoff_thermostat.png)):
+
+| Terminal | Function |
+|----------|----------|
+| 6 | − supply (12 V negative) |
+| 5 | + supply (12 V positive) |
+| 4 | Start input: **connected to 5 = heater on, open = heater off** |
+| 1, 2, 3 | Changeover-thermostat input (not used here) |
+
+The drawing's notes, translated:
+
+- **Simple on/off control:** use relay 1 on the controller. Wallas only knows open = heater off,
+  closed = heater on. Connect terminals **4 and 5** to the relay terminals; which way round does
+  not matter, it is a plain switch.
+- **Use at least 0.7 mm² wire** for the connection. Telephone or data cable is not good enough:
+  a little current flows here, and a thin cable causes faults.
+- *Thermostat control (not used):* a changeover thermostat on terminals 1–2–3, switching 1 to
+  either 3 or 4. When the set temperature is reached the heater drops to minimum, and goes back up
+  to the level set on the heater's own knob when the temperature falls.
+
+### 3.2 SlaveWallas board and wiring
+
+Planned board: an **ESP32-C6 single-relay module**
+([photo](hardware/SlaveWallas_ESP32-C6_relay_module.png)) — DC 5–60 V supply terminal, Type-C
+USB, BOOT and RST buttons, one SRD-05VDC-SL-C relay with COM/NO/NC terminals (rated 10 A at
+30 V DC, far above the start input's needs). It replaces the current SlaveWallas board and runs
+the same firmware.
+
+| Wallas terminal | Wire to | Notes |
+|-----------------|---------|-------|
+| 6 (−) | Module supply **−** | |
+| 5 (+12 V) | Module supply **+** | The module takes 5–60 V, so it runs straight off the heater's 12 V |
+| 5 (+12 V) | Relay **COM** | Second wire from terminal 5, or a jumper from the supply + terminal |
+| 4 | Relay **NO** | Relay energised → 4 joined to 5 → heater on |
+
+- **NO, not NC:** with NO, a dead or unpowered SlaveWallas leaves the heater **off**. NC would
+  run the heater whenever the board is unpowered or rebooting.
+- Wire 4 and 5 with **≥ 0.7 mm²** (§3.1).
+- Terminal 5 has to be live while the heater is off, since joining 4 to 5 is what starts it. So
+  the module stays powered and reachable with the heater off.
+- There is **no running-feedback signal** on this connector. GPIO18 (running feedback) stays
+  unconnected; the firmware's `run` field is not meaningful on this installation.
+- **Relay GPIO: not yet known.** The board's pinout is not published. The current firmware drives
+  GPIO19. To find the real pin: flash SlaveWallas from the browser flasher (hold BOOT while
+  plugging in if no port appears), open **Debug → Manual GPIO Test** and press ON/OFF pin by pin
+  until the relay clicks; note the onboard LED's pin the same way. If it is not GPIO19 the
+  firmware needs a board setting before the module is installed.
+- Bench-test on USB power first (relay COM/NO left unconnected), then move to the heater's 12 V.
 
 ---
 

@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.56  
+**Version:** 1.57  
 **Author:** SEspe  
 **Date:** 2026-10-11  
 
@@ -86,6 +86,8 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 4. Read running feedback pin to confirm engine state — **currently skipped (§2.3): `g_honda_running` is set from software state (assumed success/failure), not this pin, until GPIO15 is wired**
 
 ### 2.4 SlaveWallas Pin Assignments
+
+Wiring to the heater (terminals 4/5/6 of the Wallas 12 V control block, relay NO across 4–5) and the planned ESP32-C6 relay-module board are in [Hardware Guide §3](docs/HARDWARE.md#3-wallas-chain).
 
 | GPIO | Direction | Signal                                   |
 |------|-----------|------------------------------------------|
