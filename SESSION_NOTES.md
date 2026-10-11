@@ -18,6 +18,7 @@ v1.54–v1.61; this file is the hand-over: what is where, what is verified, what
 | v1.60 | `fd59711` | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
 | — | `9b18acf` | README **screenshots** of SlaveWallas (standalone Status tab, Weekly Timer tab), taken by the user on 1.7.2; stored in `docs/screenshots/`. |
 | v1.61 | `7a628cf`, **`v1.36.0`** | **`<unit>.local` + self-redirecting setup page:** DHCP hostname + mDNS on all four units (`masterremote`, `slavehonda`, `slavewallas`, `espnowrelay`); after Connect & Save / Save & Apply the Saved! page polls `<unit>.local` and opens it by itself; a note under each save button says so. MasterRemote 1.9.0, SlaveHonda 1.5.0, SlaveWallas 1.8.0, ESPNowRelay 1.3.0. The browser flasher serves these builds. |
+| — | `79b3815` | README Build & Flash: setup walk-through with each unit's `.local` address, when `.local` works, and two flasher troubleshooting notes ("Failed to initialize" → BOOT+EN; port busy → close the flasher's Logs & console). OTA section uses `<unit>.local`. |
 
 ## Decisions the user made (don't re-ask)
 
@@ -40,7 +41,7 @@ v1.54–v1.61; this file is the hand-over: what is where, what is verified, what
 | Unit | IP | MAC | Firmware |
 |------|----|-----|----------|
 | MasterRemote (spare board) | 192.168.10.224 | `30:AE:A4:4B:E1:78` | 1.8.2, input mask 5 (manual switches off — nothing wired) |
-| SlaveWallas | 192.168.10.220 (`slavewallas.local`) | `98:A3:16:9D:8D:0C` | 1.8.0 |
+| SlaveWallas | 192.168.10.220 (`slavewallas.local`) | `98:A3:16:9D:8D:0C` | 1.8.0 — the user did a full erase + flash round trip with the browser flasher on COM13 (native USB) and set it up again through the portal; it came back on `slavewallas.local`. The erase wiped its timer table (the test MasterRemote's newer copy will sync back). |
 
 At the end of the session the test MasterRemote (.224) was **unplugged** and SlaveWallas was
 running standalone. Timer table: Sun 19:24–19:26 and Mon 19:22–19:25 saved but unticked, all
@@ -80,6 +81,8 @@ and had to clean up.
 5. FSD §12 still says MasterRemote's `max_uri_handlers` is 22 (it's 32) — stale line.
 
 ## What went wrong today (lessons)
+
+- **"COM port taken"** was the user's own Chrome tab: the web flasher's **Logs & console** view holds the port while open. Check with a .NET `SerialPort.Open()` test; don't kill Chrome (it closes every tab) — ask the user to close the dialog/tab or replug.
 
 - An inline Python edit wrote a **literal NUL byte** into `web_server.c` (`'\\0'` inside a
   heredoc'd triple-quoted string). Long patch scripts go in a scratchpad file, not a heredoc.
