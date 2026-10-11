@@ -225,7 +225,7 @@ FSD §3.5). The wiring below is the same either way.
 
 ### 3.1 Wallas heater control terminals
 
-The heater has a six-way 12 V control terminal block
+The installed heater is an **older Wallas M26** burner/heater. It has a six-way 12 V control terminal block
 ([drawing](hardware/Wallas_connector_onoff_thermostat.png)):
 
 | Terminal | Function |
