@@ -19,7 +19,7 @@ v1.54–v1.61; this file is the hand-over: what is where, what is verified, what
 | — | `9b18acf` | README **screenshots** of SlaveWallas (standalone Status tab, Weekly Timer tab), taken by the user on 1.7.2; stored in `docs/screenshots/`. |
 | v1.61 | `7a628cf`, **`v1.36.0`** | **`<unit>.local` + self-redirecting setup page:** DHCP hostname + mDNS on all four units (`masterremote`, `slavehonda`, `slavewallas`, `espnowrelay`); after Connect & Save / Save & Apply the Saved! page polls `<unit>.local` and opens it by itself; a note under each save button says so. MasterRemote 1.9.0, SlaveHonda 1.5.0, SlaveWallas 1.8.0, ESPNowRelay 1.3.0. The browser flasher serves these builds. |
 | — | `79b3815` | README Build & Flash: setup walk-through with each unit's `.local` address, when `.local` works, and two flasher troubleshooting notes ("Failed to initialize" → BOOT+EN; port busy → close the flasher's Logs & console). OTA section uses `<unit>.local`. |
-| v1.62 | (this commit) | **Relay module's relay = GPIO19, active HIGH** (three Start/Stop pulses → three clicks, user confirmed). The board runs standard SlaveWallas firmware; the bench SlaveWallas (.220) **is** this relay module. |
+| v1.62 | `683ae4f` | **Relay module's relay = GPIO19, active HIGH** (three Start/Stop pulses → three clicks, user confirmed). The board runs standard SlaveWallas firmware; the bench SlaveWallas (.220) **is** this relay module. |
 
 ## Decisions the user made (don't re-ask)
 
