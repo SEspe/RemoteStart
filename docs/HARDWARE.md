@@ -24,7 +24,7 @@ the live hardware** and the FSD is the one to correct.
 | [`hardware/MasterRemote_interface_schematic.png`](hardware/MasterRemote_interface_schematic.png) | Redrawn (clean) schematic of MasterRemote's interface board. **Has known transcription errors — see §6.** |
 | [`hardware/MasterRemote_interface_schematic_marked.jpg`](hardware/MasterRemote_interface_schematic_marked.jpg) | Photo of the original hand-marked drawing. **Authoritative where the two disagree**: it identifies the module as a LOLIN32 Lite, corrects the Wallas LED resistor to 1 kΩ, and adds the second pull-up (R2). |
 | [`hardware/Wallas_connector_onoff_thermostat.png`](hardware/Wallas_connector_onoff_thermostat.png) | The Wallas heater's 12 V control terminal block (1–6), with the two ways to control it from outside: simple on/off across terminals 4–5, or a changeover thermostat on 1–2–3. Norwegian notes; translated in §3.1. |
-| [`hardware/SlaveWallas_ESP32-C6_relay_module.png`](hardware/SlaveWallas_ESP32-C6_relay_module.png) | Product photo of the planned SlaveWallas board: ESP32-C6 single-relay module, DC 5–60 V supply, Type-C, BOOT/RST buttons. §3.2. |
+| [`hardware/SlaveWallas_ESP32-C6_relay_module.png`](hardware/SlaveWallas_ESP32-C6_relay_module.png) | Product photo of the planned SlaveWallas board: ESP32-C6 single-relay module, DC 5–60 V supply, Type-C, BOOT/RST buttons. §3.2, which also links an example (unverified) eBay listing. |
 
 ---
 
@@ -303,6 +303,14 @@ Planned board: an **ESP32-C6 single-relay module**
 USB, BOOT and RST buttons, one SRD-05VDC-SL-C relay with COM/NO/NC terminals (rated 10 A at
 30 V DC, far above the start input's needs). It replaces the current SlaveWallas board and runs
 the same firmware.
+
+**Example listing:** [DC5-60V 1 Way Relay Module onboard ESP32-C6 WIFI Bluetooth Development
+Board (eBay)](https://www.ebay.com/itm/396252398061) — sold as "Type-C ESP32-C6 WIFI Bluetooth
+Development Board Single Channel Relay Module DIY". *For identification only, not verified:* it
+was found by its title and has not been checked against the board actually bought. Several
+sellers sell look-alike boards under similar names, possibly with different parts or relay
+GPIOs, and listings disappear. Check that yours matches the photo above, and find its relay
+GPIO on the bench as described below, whatever the listing says.
 
 | Wallas terminal | Wire to | Notes |
 |-----------------|---------|-------|
