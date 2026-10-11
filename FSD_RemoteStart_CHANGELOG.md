@@ -22,6 +22,8 @@ bumps, and an entry here land together.
 
 ---
 
+- v1.58 — **Removed the old Arduino sketches.** Repository cleanup only — no firmware change. Five `.ino` files were still committed although no build used them and the FSD and README both say the project has no Arduino code: `MasterRemote/MasterHonda.ino`, `SlaveHonda/SlaveHonda.ino`, `SlaveWallas/SlaveWallas.ino`, and `SlaveWallas/SlaveWallas8266.ino` plus an identical copy under `SlaveWallas/Archive/`. They remain in git history; the last commit containing them is `fbca35c`, so e.g. `git show fbca35c:MasterRemote/MasterHonda.ino` prints one.
+
 - v1.57 — **Wallas wiring documented; ESP32-C6 relay module planned for SlaveWallas** ([Hardware Guide §3.1–3.2](docs/HARDWARE.md#31-wallas-heater-control-terminals)). Documentation only — no firmware change. The heater's 12 V control block: terminal 6 −, 5 +, and joining 4 to 5 runs the heater (open = off); terminals 1–2–3 are an alternative thermostat input, unused. SlaveWallas is wired as: module supply from 5/6, relay COM to 5, NO to 4 — NO so that an unpowered board leaves the heater off. The vendor drawing's note to use at least 0.7 mm² wire is carried over. The planned board is an ESP32-C6 single-relay module (DC 5–60 V, Type-C, BOOT/RST); its relay GPIO is not published and is to be found with the Debug tab before installation. The connector has no running-feedback signal, so GPIO18 stays unconnected. §2.4 now points to the guide.
 
 - v1.56 — **SlaveWallas runs standalone; the weekly timer lives on both units and stays in sync** (new §3.5; §3.3, §3.4, §6.1a, §6.2, §13). MasterRemote 1.8.2, SlaveWallas 1.7.2, ESPNowRelay 1.2.0; SlaveHonda unchanged.
