@@ -99,6 +99,8 @@ Or, from GitHub Releases (device needs internet access):
 2. Click **Refresh Releases**, pick a release, click **Install Selected**
 3. The device downloads and flashes it directly, then reboots
 
+<a id="safety"></a>
+
 ## ⚠️ Safety and disclaimer
 
 > [!CAUTION]
@@ -122,3 +124,14 @@ Or, from GitHub Releases (device needs internet access):
 ## Author
 
 SEspe
+
+## License
+
+[MIT](LICENSE) — free to use, copy, modify and share, provided **as is, without warranty**; see
+also the [safety and disclaimer](#safety) section above.
+
+Not covered by the MIT license, because they are not this project's own work: the Wallas wiring
+drawing ([`docs/hardware/Wallas_connector_onoff_thermostat.png`](docs/hardware/Wallas_connector_onoff_thermostat.png),
+from third-party documentation) and the relay-module product photo
+([`docs/hardware/SlaveWallas_ESP32-C6_relay_module.png`](docs/hardware/SlaveWallas_ESP32-C6_relay_module.png),
+from a seller's listing). They are included for reference only and remain their owners'.

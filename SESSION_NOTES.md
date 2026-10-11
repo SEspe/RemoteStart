@@ -2,7 +2,7 @@
 
 One long session: browser flasher, two firmware features, Wallas hardware docs, repo
 cleanup. Full detail is in [FSD_RemoteStart_CHANGELOG.md](FSD_RemoteStart_CHANGELOG.md)
-v1.54–v1.59; this file is the hand-over: what is where, what is verified, what is open.
+v1.54–v1.60; this file is the hand-over: what is where, what is verified, what is open.
 
 ## Shipped today
 
@@ -13,7 +13,9 @@ v1.54–v1.59; this file is the hand-over: what is where, what is verified, what
 | v1.56 | `12aaef9`, **`v1.35.0`** | **SlaveWallas standalone** + **weekly timer on both units, synced** over ESP-NOW (newest edit wins), SlaveWallas Start/Stop buttons, self-refreshing Weekly Timer tabs. MasterRemote 1.8.2, SlaveWallas 1.7.2, ESPNowRelay 1.2.0, SlaveHonda 1.4.13 (unchanged). FSD §3.5. |
 | v1.57 | `f2c2c97`, `fbca35c` | **Wallas wiring** in the hardware guide §3.1–3.2: older **Wallas M26**, 12 V block 6 −, 5 +, 4 joined to 5 = on. Planned ESP32-C6 single-relay module: supply 5/6, COM→5, **NO**→4, ≥ 0.7 mm². |
 | v1.58 | `340985e` | Removed the five unused Arduino `.ino` sketches (last in `fbca35c`). |
-| v1.59 | (this commit) | **Safety precautions + at-your-own-risk disclaimer** for connecting SlaveWallas to a heater: CAUTION block opening Hardware Guide §3, banner at the top of the guide, README "Safety and disclaimer" section. |
+| v1.59 | `a376c1f` | **Safety precautions + at-your-own-risk disclaimer** for connecting SlaveWallas to a heater: CAUTION block opening Hardware Guide §3, banner at the top of the guide, README "Safety and disclaimer" section. |
+| — | `cccbd90` | Hardware guide §3.2 links an **example (unverified) eBay listing** for the relay module. |
+| v1.60 | (this commit) | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
 
 ## Decisions the user made (don't re-ask)
 
