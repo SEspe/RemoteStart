@@ -1,7 +1,7 @@
 # Session notes — 2026-10-11
 
-One long session: browser flasher, two firmware features, Wallas hardware docs, repo
-cleanup. Full detail is in [FSD_RemoteStart_CHANGELOG.md](FSD_RemoteStart_CHANGELOG.md)
+One long session: browser flasher, two firmware features, Wallas hardware docs with a safety
+disclaimer, MIT license, repo cleanup. Full detail is in [FSD_RemoteStart_CHANGELOG.md](FSD_RemoteStart_CHANGELOG.md)
 v1.54–v1.60; this file is the hand-over: what is where, what is verified, what is open.
 
 ## Shipped today
@@ -15,7 +15,7 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 | v1.58 | `340985e` | Removed the five unused Arduino `.ino` sketches (last in `fbca35c`). |
 | v1.59 | `a376c1f` | **Safety precautions + at-your-own-risk disclaimer** for connecting SlaveWallas to a heater: CAUTION block opening Hardware Guide §3, banner at the top of the guide, README "Safety and disclaimer" section. |
 | — | `cccbd90` | Hardware guide §3.2 links an **example (unverified) eBay listing** for the relay module. |
-| v1.60 | (this commit) | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
+| v1.60 | `fd59711` | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
 
 ## Decisions the user made (don't re-ask)
 
@@ -27,6 +27,11 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 - **Clock:** NTP per unit, no timer before first sync, no RTC / no time-from-Master — "OK for now".
 - **Manual-switch fail-safe:** firmware mask now; rewiring each switch to its other contact
   (ground = On, read inverted) is the real fix, at a later hardware visit.
+- **Wallas wiring:** relay **NO** across terminals 4–5, board powered from 5/6 (the user's own
+  description of their M26). Every Wallas wiring text must carry the safety precautions and the
+  at-your-own-risk disclaimer (Hardware Guide §3, README `#safety`).
+- **License:** MIT, "Copyright (c) 2026 SEspe", as BirdBox. The two third-party images in
+  `docs/hardware/` are excluded in the README's License section.
 
 ## Test bench (192.168.10.x)
 
@@ -61,7 +66,8 @@ and had to clean up.
    Check SlaveWallas `/api/status` for an active command before rebooting it.
 2. **Untested:** a local Start made while standalone being handed to Master when it returns;
    anything through ESPNowRelay (no relay on the bench).
-3. **New SlaveWallas board (ESP32-C6 relay module):** relay GPIO unknown. Find it on the bench
+3. **New SlaveWallas board (ESP32-C6 relay module):** example listing (unverified) is linked in
+   Hardware Guide §3.2; the user has no link to their own purchase. Relay GPIO unknown. Find it on the bench
    with Debug → Manual GPIO Test. If no button clicks it, it's on a strapping pin (4/5/8/9/15)
    the tab hides — make those testable. If it isn't GPIO19, add a board setting to SlaveWallas.
 4. Manual-switch rewiring (above). Fix the redrawn MasterRemote schematic (hardware guide §6).
