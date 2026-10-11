@@ -1,8 +1,8 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.53  
+**Version:** 1.54  
 **Author:** SEspe  
-**Date:** 2026-08-10  
+**Date:** 2026-10-11  
 
 This is **the clean, current specification**: what the system is required to do,
 stated in the present tense.
@@ -536,7 +536,7 @@ Pushing a tag triggers `.github/workflows/release.yml`, which builds the affecte
 | `honda-v*`   | SlaveHonda only                  | Single-unit hotfix only |
 | `wallas-v*`  | SlaveWallas only                 | Single-unit hotfix only |
 
-First flash must be done via USB. OTA handles all subsequent updates.
+First flash must be done via USB — from the browser flasher (§11.1) or with ESP-IDF. OTA handles all subsequent updates. Release `.bin` assets are app images only; they are not sufficient on their own for a blank board, which also needs the bootloader, partition table and OTA data.
 
 > **Housekeeping:** if per-unit tags accumulate single-binary GitHub Releases again (e.g. from hotfixing one unit), it's fine to periodically delete the *releases* to keep the Releases page focused on real combined `v*` releases — just don't pass `--cleanup-tag` to `gh release delete`, so the underlying git tags (useful for `git checkout <tag>` history) survive.
 
@@ -638,12 +638,32 @@ This monitor is local per-unit only (§12) — it was added specifically because
 
 ## 11. Build & Flash Reference
 
-### Prerequisites
+### 11.1 Browser flasher (first flash of a new unit, no toolchain)
+
+A new unit is flashed from **https://sespe.github.io/RemoteStart/**, an [esp-web-tools](https://esphome.github.io/esp-web-tools/) page that writes over Web Serial (Chrome or Edge on desktop). It has one button per unit; each points at that unit's own manifest.
+
+| Unit | Chip family | Bootloader | Partition table | OTA data | App |
+|------|-------------|-----------|-----------------|----------|-----|
+| MasterRemote | ESP32    | 0x1000 | 0x8000 | 0xe000 | 0x10000 |
+| SlaveHonda   | ESP32    | 0x1000 | 0x8000 | 0xe000 | 0x10000 |
+| SlaveWallas  | ESP32-C6 | 0x0    | 0x8000 | 0xe000 | 0x10000 |
+| ESPNowRelay  | ESP32-C6 | 0x0    | 0x8000 | 0xe000 | 0x10000 |
+
+- **Source:** `docs/webflash/index.html` (the page) and `docs/webflash/manifest.template.json` (one template, filled in per unit).
+- **Publishing:** `.github/workflows/webflash-pages.yml` runs on every push to `master` that touches a unit folder or the flasher, and on demand. It builds all four units with ESP-IDF v6.0.1, stages each unit's four images under `<Unit>/` with a `manifest.json` carrying that unit's `FIRMWARE_VERSION`, chip family and bootloader offset, and deploys the result to GitHub Pages. The repo's Pages source must be set to **GitHub Actions**.
+- **What it serves** is the current `master` build, not necessarily the latest tagged release. That is fine for a first flash, since the unit's OTA tab can move it to any release afterwards.
+- **Erase:** the manifest sets `new_install_prompt_erase`, so the page offers a full erase. Take it on any board with unknown earlier firmware: a plain flash leaves everything outside the written regions untouched, and stale data there has left a board whose logs reported a running SoftAP while its radio transmitted nothing.
+- **Chip check:** esp-web-tools refuses a manifest whose chip family does not match the connected chip, so the C6 units cannot be flashed onto an ESP32 or vice versa. MasterRemote and SlaveHonda share a chip family, so the page cannot catch a mix-up between those two — the operator must press the right button.
+- After flashing, the unit boots into its first-startup portal (§4).
+
+### 11.2 ESP-IDF
+
+#### Prerequisites
 
 - ESP-IDF v6.0.1 installed and sourced (`idf.py` on PATH)
 - MasterRemote/SlaveHonda: ESP32 board connected via USB. SlaveWallas: ESP32-C6 board connected via USB (native USB-Serial/JTAG, no separate UART chip needed).
 
-### Commands
+#### Commands
 
 ```bash
 # Build
@@ -661,7 +681,7 @@ esptool.py -p COM7 erase_region 0x9000 0x5000
 idf.py -p COM7 erase-flash flash monitor
 ```
 
-### IDE
+#### IDE
 
 Open any unit folder in **VS Code with the ESP-IDF extension** (Espressif IDF). The extension detects `CMakeLists.txt` automatically. Use the status bar buttons to select port, build, and flash.
 

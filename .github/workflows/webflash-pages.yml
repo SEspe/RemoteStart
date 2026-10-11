@@ -1,0 +1,103 @@
+name: Web Flasher (GitHub Pages)
+
+# Publishes docs/webflash/ as a browser-based first-flash tool
+# (esp-web-tools) at https://SEspe.github.io/RemoteStart/, rebuilding all
+# four units' firmware it serves on every push to master. This is for the
+# *initial* USB flash of a new/blank board only — subsequent updates go over
+# OTA from the unit's own web UI, no browser flasher needed.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'MasterRemote/**'
+      - 'SlaveHonda/**'
+      - 'SlaveWallas/**'
+      - 'ESPNowRelay/**'
+      - 'docs/webflash/**'
+      - '.github/workflows/webflash-pages.yml'
+  workflow_dispatch: {}
+
+env:
+  IDF_VERSION: v6.0.1
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build ${{ matrix.unit }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          # boot_offset: the ESP32 ROM loads the 2nd-stage bootloader from
+          # 0x1000, the ESP32-C6 from 0x0. Everything after it is the same
+          # (partition table 0x8000, otadata 0xe000, app 0x10000).
+          - { unit: MasterRemote, target: esp32,   chip: ESP32,    boot_offset: 4096 }
+          - { unit: SlaveHonda,   target: esp32,   chip: ESP32,    boot_offset: 4096 }
+          - { unit: SlaveWallas,  target: esp32c6, chip: ESP32-C6, boot_offset: 0 }
+          - { unit: ESPNowRelay,  target: esp32c6, chip: ESP32-C6, boot_offset: 0 }
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build with ESP-IDF
+        uses: espressif/esp-idf-ci-action@v1
+        with:
+          esp_idf_version: ${{ env.IDF_VERSION }}
+          target: ${{ matrix.target }}
+          path: ${{ matrix.unit }}
+          command: idf.py build
+
+      - name: Stage firmware & manifest
+        run: |
+          U=${{ matrix.unit }}
+          VER=$(grep 'FIRMWARE_VERSION' $U/main/version.h | grep -oP '"[^"]+"' | tr -d '"')
+          mkdir -p stage/$U
+          cp $U/build/bootloader/bootloader.bin         stage/$U/bootloader.bin
+          cp $U/build/partition_table/partition-table.bin stage/$U/partition-table.bin
+          cp $U/build/ota_data_initial.bin              stage/$U/ota_data_initial.bin
+          cp $U/build/$U.bin                            stage/$U/$U.bin
+          sed -e "s/__UNIT__/$U/g" -e "s/__VERSION__/$VER/" \
+              -e "s/__CHIP__/${{ matrix.chip }}/" -e "s/__BOOT_OFFSET__/${{ matrix.boot_offset }}/" \
+              docs/webflash/manifest.template.json > stage/$U/manifest.json
+          cat stage/$U/manifest.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: webflash-${{ matrix.unit }}
+          path: stage
+
+  deploy:
+    name: Assemble & deploy Pages
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: webflash-*
+          path: _site
+          merge-multiple: true
+
+      - name: Add the flasher page
+        run: |
+          cp docs/webflash/index.html _site/index.html
+          find _site -type f | sort
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - id: deployment
+        uses: actions/deploy-pages@v4

@@ -1,0 +1,16 @@
+{
+  "name": "RemoteStart __UNIT__",
+  "version": "__VERSION__",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "__CHIP__",
+      "parts": [
+        { "path": "bootloader.bin", "offset": __BOOT_OFFSET__ },
+        { "path": "partition-table.bin", "offset": 32768 },
+        { "path": "ota_data_initial.bin", "offset": 57344 },
+        { "path": "__UNIT__.bin", "offset": 65536 }
+      ]
+    }
+  ]
+}

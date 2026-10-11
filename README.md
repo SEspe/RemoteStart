@@ -46,11 +46,41 @@ MasterRemote and SlaveWallas require WiFi. SlaveHonda prefers it but can operate
 
 ## Build & Flash
 
+### Flash a new unit from the browser (no toolchain)
+
+Use the **[browser-based web flasher](https://sespe.github.io/RemoteStart/)**:
+plug the board into whatever computer has the USB cable, open that page in
+**Chrome or Edge** on desktop, and click the button for the unit you are
+building — **Flash MasterRemote**, **Flash SlaveHonda**, **Flash SlaveWallas**
+or **Flash ESPNowRelay**. No ESP-IDF or esptool install is needed on that
+computer.
+
+1. Plug in the board. ESP32 boards (MasterRemote, SlaveHonda) need the
+   Silicon Labs CP210x driver; ESP32-C6 boards (SlaveWallas, ESPNowRelay)
+   use native USB — hold **BOOT** while plugging in if no port appears.
+2. Click the unit's button and pick its serial port.
+3. Choose **Erase device** when offered. A board that ran other firmware
+   before can otherwise keep stale data that leaves its radio silent.
+4. When it reboots, continue with [First Startup](#first-startup) above.
+
+MasterRemote and SlaveHonda are both plain ESP32, so the flasher can't tell
+which one you meant — make sure you press the right button. The C6 units are
+checked: their firmware is refused on any other chip.
+
+The page is for the initial flash only; every update after that goes over
+OTA (below). It is rebuilt from `master` by
+[`.github/workflows/webflash-pages.yml`](.github/workflows/webflash-pages.yml),
+which builds all four units and publishes each one's bootloader, partition
+table, OTA data and app image with an
+[esp-web-tools](https://esphome.github.io/esp-web-tools/) manifest.
+
+### Build and flash with ESP-IDF
+
 ```bash
 # One-time ESP-IDF v6.0.1 environment setup (see FSD §11), then per unit:
 cd MasterRemote            # or SlaveHonda / SlaveWallas / ESPNowRelay
 idf.py set-target esp32c6 # SlaveWallas & ESPNowRelay only, first build
-idf.py -p COMx flash
+idf.py -p COMx erase-flash flash   # erase-flash: new or reused board only
 ```
 
 ## OTA Update

@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RemoteStart — Flash from Browser</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js?module"></script>
+<style>
+  body { font-family: system-ui, -apple-system, sans-serif; max-width: 720px; margin: 3rem auto; padding: 0 1rem; line-height: 1.5; color: #1a1a1a; }
+  h1 { font-size: 1.4rem; }
+  h2 { font-size: 1.05rem; margin: 0 0 .25rem; }
+  .units { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; margin: 1.5rem 0; }
+  .unit { border: 1px solid #ddd; border-radius: 8px; padding: 1rem 1.25rem; }
+  .unit p { margin: .25rem 0 .75rem; font-size: .9rem; color: #444; }
+  .meta { font-size: .8rem; color: #666; }
+  .chip { display: inline-block; font-size: .75rem; padding: .05rem .45rem; border-radius: 4px; background: #e0e7ff; color: #3730a3; margin-left: .35rem; vertical-align: middle; }
+  .chip.c6 { background: #dcfce7; color: #166534; }
+  esp-web-install-button button {
+    font-size: 1rem; padding: .55rem 1.1rem; border-radius: 8px; border: none;
+    background: #2563eb; color: #fff; cursor: pointer;
+  }
+  esp-web-install-button button:hover { background: #1d4ed8; }
+  .note { background: #f5f5f5; border-radius: 8px; padding: 1rem 1.25rem; font-size: .9rem; }
+  .warn { background: #fff7ed; border-left: 4px solid #f59e0b; border-radius: 8px; padding: .75rem 1.25rem; font-size: .9rem; margin-bottom: 1rem; }
+  code { background: #eee; padding: .1rem .35rem; border-radius: 4px; font-size: .85em; }
+  a { color: #2563eb; }
+</style>
+</head>
+<body>
+<h1>RemoteStart — flash a new unit</h1>
+<p>Flashes the latest built firmware onto a blank (or previously different)
+board straight from your browser — no ESP-IDF, no esptool install. Works in
+<strong>Chrome or Edge on desktop</strong> (Web Serial), over a USB cable.
+Pick the card for the unit you are building.</p>
+
+<div class="warn">
+  <strong>Choose the right unit.</strong> MasterRemote and SlaveHonda are both
+  plain ESP32 boards, so the flasher cannot tell them apart — whichever button
+  you press is what the board becomes. (SlaveWallas and ESPNowRelay need an
+  ESP32-C6; the flasher refuses them on any other chip.)
+</div>
+
+<div class="units">
+  <div class="unit">
+    <h2>MasterRemote <span class="chip">ESP32</span></h2>
+    <p>Hub: Victron relay inputs, manual switches, weekly Wallas timer, ESP-NOW beacon.</p>
+    <esp-web-install-button manifest="./MasterRemote/manifest.json">
+      <button slot="activate">Flash MasterRemote</button>
+      <span slot="unsupported">Use Chrome or Edge on desktop (Web Serial).</span>
+      <span slot="not-allowed">This page must be served over HTTPS.</span>
+    </esp-web-install-button>
+    <div class="meta" data-manifest="./MasterRemote/manifest.json">Version: …</div>
+  </div>
+
+  <div class="unit">
+    <h2>SlaveHonda <span class="chip">ESP32</span></h2>
+    <p>Honda EU70IS ignition/starter relays. WiFi preferred, ESP-NOW fallback.</p>
+    <esp-web-install-button manifest="./SlaveHonda/manifest.json">
+      <button slot="activate">Flash SlaveHonda</button>
+      <span slot="unsupported">Use Chrome or Edge on desktop (Web Serial).</span>
+      <span slot="not-allowed">This page must be served over HTTPS.</span>
+    </esp-web-install-button>
+    <div class="meta" data-manifest="./SlaveHonda/manifest.json">Version: …</div>
+  </div>
+
+  <div class="unit">
+    <h2>SlaveWallas <span class="chip c6">ESP32-C6</span></h2>
+    <p>Wallas heater relay. WiFi required.</p>
+    <esp-web-install-button manifest="./SlaveWallas/manifest.json">
+      <button slot="activate">Flash SlaveWallas</button>
+      <span slot="unsupported">Use Chrome or Edge on desktop (Web Serial).</span>
+      <span slot="not-allowed">This page must be served over HTTPS.</span>
+    </esp-web-install-button>
+    <div class="meta" data-manifest="./SlaveWallas/manifest.json">Version: …</div>
+  </div>
+
+  <div class="unit">
+    <h2>ESPNowRelay <span class="chip c6">ESP32-C6</span></h2>
+    <p>Optional ESP-NOW store-and-forward repeater between MasterRemote and a far slave.</p>
+    <esp-web-install-button manifest="./ESPNowRelay/manifest.json">
+      <button slot="activate">Flash ESPNowRelay</button>
+      <span slot="unsupported">Use Chrome or Edge on desktop (Web Serial).</span>
+      <span slot="not-allowed">This page must be served over HTTPS.</span>
+    </esp-web-install-button>
+    <div class="meta" data-manifest="./ESPNowRelay/manifest.json">Version: …</div>
+  </div>
+</div>
+
+<div class="note">
+  <strong>Before you start</strong>
+  <ol>
+    <li>Plug the board into <em>this</em> computer via USB. ESP32 boards
+      (MasterRemote, SlaveHonda) use a CP210x USB-serial chip — install the
+      Silicon Labs driver if no port shows up. ESP32-C6 boards use their
+      native USB port; if it doesn't appear, hold <strong>BOOT</strong> while
+      plugging in.</li>
+    <li>Click the unit's <strong>Flash</strong> button and pick its serial
+      port from the browser prompt.</li>
+    <li>Choose <strong>Erase device</strong> when offered. A board with
+      unknown earlier firmware can keep stale data outside the areas being
+      written, which has left a radio silent before — a clean install avoids
+      that.</li>
+    <li>After flashing, the unit reboots into its own WiFi access point,
+      <code>&lt;Unit&gt;-Config</code> (password <code>honda1234</code>). Join
+      it and open <code>http://192.168.4.1/wifi-setup</code> to enter your
+      WiFi — see the
+      <a href="https://github.com/SEspe/RemoteStart#first-startup">README's
+      "First Startup" section</a>.</li>
+  </ol>
+  <p style="margin-bottom:0">No pairing is needed: units find each other over
+  ESP-NOW by role. Every update after this first flash goes over the air,
+  from the unit's own <strong>OTA Update</strong> tab — this page is only
+  needed once, for the initial flash.</p>
+</div>
+
+<p style="font-size:.85rem;color:#666">Firmware built automatically from
+<a href="https://github.com/SEspe/RemoteStart">SEspe/RemoteStart</a> master
+via GitHub Actions.</p>
+
+<script>
+  document.querySelectorAll('[data-manifest]').forEach(function (el) {
+    fetch(el.dataset.manifest).then(function (r) { return r.json(); })
+      .then(function (m) { el.textContent = 'Version: ' + m.version; })
+      .catch(function () { el.textContent = 'Version: unavailable'; });
+  });
+</script>
+</body>
+</html>

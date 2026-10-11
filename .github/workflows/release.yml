@@ -163,14 +163,11 @@ jobs:
             2. Select the `.bin` file for that unit
             3. Click **Upload & Flash**
 
-            ### Flash via USB (first time)
-            ```
-            idf.py -p COMx flash
-            ```
-            or with esptool:
-            ```
-            esptool.py --chip esp32 -p COMx write_flash 0x10000 MasterRemote_<ver>.bin      # MasterRemote / SlaveHonda
-            esptool.py --chip esp32c6 -p COMx write_flash 0x10000 SlaveWallas_<ver>.bin    # SlaveWallas
-            ```
+            ### First flash of a new unit (USB)
+            Use the browser flasher at https://sespe.github.io/RemoteStart/ (Chrome or Edge on desktop) —
+            it writes the bootloader, partition table and app in one go, no toolchain needed.
+            The `.bin` files attached here are app images only (for OTA); on a blank board they
+            need the bootloader and partition table too, so for a toolchain flash use
+            `idf.py -p COMx erase-flash flash` from the unit's folder.
           files: artifacts/*.bin
           fail_on_unmatched_files: false
