@@ -49,6 +49,7 @@ extern void input_enable_set(uint8_t mask);
 extern void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm);
 extern void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_hh, int stop_mm);
 extern bool timer_is_synced(void);
+extern uint32_t timer_get_rev(void);
 extern void timer_get_now_str(char *buf, size_t sz);
 
 /* Layout must match main.c's slave_info_t exactly (shared via extern, not a header). */
@@ -240,6 +241,7 @@ static const char INDEX_HTML_TMPL[] =
 ".on-l{background:#4caf50;box-shadow:0 0 5px #4caf50}.off-l{background:#444}"
 ".ok{color:#4caf50}.dim{color:#888}"
 ".ts{font-size:.7rem;color:#555;margin-top:6px}"
+".warn{font-size:.78rem;color:#e9b400;margin-bottom:10px}"
 ".tbl-wrap{overflow-x:auto}"
 "table.nodes{border-collapse:collapse;width:100%;font-size:.78rem;white-space:nowrap}"
 "table.nodes th,table.nodes td{padding:6px 10px;text-align:left;border-bottom:1px solid #0f3460}"
@@ -355,7 +357,8 @@ static const char INDEX_HTML_TMPL[] =
 "<div id='timer' class='pane'>"
 "<div class='card'><h3>Weekly Wallas Timer</h3>"
 "<p class='warn' id='clock'>Clock: …</p>"
-"<div class='tbl-wrap'><table class='nodes' id='timerTbl'>…</table></div>"
+"<div class='tbl-wrap'><table class='nodes' id='timerTbl'></table></div>"
+"<p class='warn' id='tmrNote' style='margin-top:8px'></p>"
 "<div class='ctl'><button class='go go-on' id='timerSetBtn' disabled onclick='saveAllTimer()'>Set</button></div>"
 "</div></div>"
 "<div id='wifinet' class='pane'>"
@@ -477,10 +480,25 @@ static const char INDEX_HTML_TMPL[] =
 "'<td><input type=\"time\" id=\"tst'+d+'\" onchange=\"markTimerDirty()\"></td>'+"
 "'<td><input type=\"time\" id=\"tsp'+d+'\" onchange=\"markTimerDirty()\"></td></tr>';}"
 "document.getElementById('timerTbl').innerHTML=h;}"
-"function markTimerDirty(){document.getElementById('timerSetBtn').disabled=false;}"
-"function fetchTimer(){"
+/* Weekly Timer tab refresh (v1.56): polled every 2 s while open, but the
+ * table is only redrawn when the unit's timer rev has changed (an edit from
+ * SlaveWallas or another browser) -- and never over unsaved edits or a
+ * field being typed in; then a note says so instead. */
+"var g_tmrRev=-1,g_tmrDirty=false;"
+"function markTimerDirty(){g_tmrDirty=true;document.getElementById('timerSetBtn').disabled=false;}"
+"function tmrBusy(){var a=document.activeElement;return g_tmrDirty||(a&&a!==document.body&&document.getElementById('timerTbl').contains(a));}"
+"function fetchTimer(force){"
 "fetch('/api/timer').then(r=>r.json()).then(d=>{"
-"document.getElementById('clock').textContent='Clock: '+d.now+' (CET/CEST)'+(d.synced?'':' \\u2014 NOT SYNCED YET');"
+"document.getElementById('clock').textContent='Clock: '+d.now+' (CET/CEST)'+(d.synced?'':' \\u2014 NOT SYNCED YET')+"
+"(d.rev>=1704067200?' \\u2014 last change '+hms(new Date(d.rev*1000)):'');"
+"if(d.rev===g_tmrRev&&!force)return;"
+"var nt=document.getElementById('tmrNote');"
+"if(!force&&g_tmrRev>=0&&tmrBusy()){"
+"nt.innerHTML='The timer was changed on SlaveWallas (or in another browser) while you were editing. '+"
+"'<b>Set</b> replaces it with your version, or <a href=\"#\" style=\"color:#e9b400\" '+"
+"'onclick=\"g_tmrDirty=false;fetchTimer(1);return false\">load the latest</a>.';return;}"
+"if(!force&&tmrBusy())return;"
+"nt.textContent='';g_tmrRev=d.rev;g_tmrDirty=false;"
 "d.days.forEach(function(x){"
 "document.getElementById('ten'+x.day).checked=x.enabled;"
 "document.getElementById('tst'+x.day).value=x.start;"
@@ -495,7 +513,7 @@ static const char INDEX_HTML_TMPL[] =
 "const st=document.getElementById('tst'+d).value||'00:00';"
 "const sp=document.getElementById('tsp'+d).value||'00:00';"
 "ps.push(fetch('/api/timer/set?day='+d+'&enabled='+en+'&start='+st+'&stop='+sp,{method:'POST'}));}"
-"Promise.all(ps).catch(()=>{btn.disabled=false;});}"
+"Promise.all(ps).then(function(){g_tmrDirty=false;fetchTimer(1);}).catch(()=>{btn.disabled=false;});}"
 /* Input Sources card: edits stage locally and commit with one Set button,
  * like the Weekly Timer; the 2 s status poll refreshes the boxes only while
  * nothing is staged, so it can't overwrite an edit in progress. */
@@ -566,7 +584,7 @@ static const char INDEX_HTML_TMPL[] =
  * roster; it is handed to /api/versions as a query parameter. */
 /* 24-hour clock everywhere in the UI -- toLocaleTimeString() follows the
  * viewing browser's locale and rendered as 12-hour AM/PM here. */
-"function hms(){var d=new Date(),p=function(n){return(n<10?'0':'')+n;};"
+"function hms(t){var d=t||new Date(),p=function(n){return(n<10?'0':'')+n;};"
 "return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
 "var VER_ROWS=[],g_verLoaded=false;"
 "function verEsc(s){return String(s).replace(/[&<>\"']/g,'');}"
@@ -724,6 +742,7 @@ static const char INDEX_HTML_TMPL[] =
 "var dbOn=document.getElementById('debug').classList.contains('on');"
 "if(stOn||dbOn)fetchStatus();"
 "if(dbOn){fetchSys();fetchDbg();}"
+"if(document.getElementById('timer').classList.contains('on'))fetchTimer();"
 "if(document.getElementById('nodes').classList.contains('on'))fetchNodes();"
 "},2000);"
 "fetchStatus();"
@@ -948,8 +967,8 @@ static esp_err_t h_timer_get(httpd_req_t *req)
     timer_get_now_str(now_str, sizeof(now_str));
 
     char buf[900];
-    int n = snprintf(buf, sizeof(buf), "{\"now\":\"%s\",\"synced\":%s,\"days\":[",
-                      now_str, timer_is_synced() ? "true" : "false");
+    int n = snprintf(buf, sizeof(buf), "{\"now\":\"%s\",\"synced\":%s,\"rev\":%lu,\"days\":[",
+                      now_str, timer_is_synced() ? "true" : "false", (unsigned long)timer_get_rev());
     for (int d = 0; d < 7 && n < (int)sizeof(buf) - 80; d++) {
         bool en; int sh, sm, ph, pm;
         timer_get_day(d, &en, &sh, &sm, &ph, &pm);

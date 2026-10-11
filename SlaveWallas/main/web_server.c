@@ -43,6 +43,16 @@ extern volatile int8_t   g_espnow_rssi;
 extern volatile uint8_t  g_espnow_channel;
 extern          uint8_t  g_master_mac[6];
 extern volatile bool     g_master_known;
+/* Standalone mode + weekly timer (v1.56), in main.c */
+extern bool master_present(void);
+extern void wallas_web_set(bool start);
+extern bool wallas_local_web_start(void);
+extern bool wallas_timer_active(void);
+extern void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm);
+extern void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_hh, int stop_mm);
+extern bool timer_is_synced(void);
+extern uint32_t timer_get_rev(void);
+extern void timer_get_now_str(char *buf, size_t sz);
 
 extern bool              g_ipcfg_static;
 extern char              g_ipcfg_ip[16];
@@ -206,6 +216,16 @@ static const char INDEX_HTML[] =
 ".btns{display:flex;gap:4px}"
 "button.go{flex:1;padding:6px;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:.78rem}"
 "button.go-on{background:#4caf50}button.go-off{background:#555}"
+".ctl{display:flex;gap:8px;margin-top:8px}"
+".ctl button.go{padding:8px;font-size:.85rem}"
+"button.go:disabled{background:#333;color:#777;cursor:default}"
+".tbl-wrap{overflow-x:auto}"
+"table.tmr{border-collapse:collapse;width:100%;font-size:.78rem;white-space:nowrap}"
+"table.tmr th,table.tmr td{padding:6px 10px;text-align:left;border-bottom:1px solid #0f3460}"
+"table.tmr th{color:#e94560;font-size:.72rem;text-transform:uppercase}"
+"table.tmr input[type=time]{background:#0f3460;border:1px solid #444;color:#eee;"
+"border-radius:4px;padding:3px 5px;font-size:.78rem}"
+"table.tmr input[type=checkbox]{width:16px;height:16px}"
 ".ota-wrap{background:#fff;border-radius:8px;padding:20px;color:#333}"
 ".ota-wrap h3{color:#e94560;margin-bottom:12px}"
 ".ota-wrap p{font-size:.85rem;color:#555;margin-bottom:14px}"
@@ -256,11 +276,16 @@ static const char INDEX_HTML[] =
 "<div class='tabs'>"
 "<button class='tab on' onclick='show(\"status\",this)'>Status</button>"
 "<button class='tab' onclick='show(\"debug\",this)'>Debug</button>"
+"<button class='tab' onclick='show(\"timer\",this)'>Weekly Timer</button>"
 "<button class='tab' onclick='show(\"wifinet\",this)'>WiFi</button>"
 "<button class='tab' onclick='show(\"ota\",this)'>OTA Update</button>"
 "</div>"
 "<div id='status' class='pane on'>"
-"<div class='card'><h3>Wallas Heater</h3><div class='grid' id='pins'>…</div></div>"
+"<div class='card'><h3>Wallas Heater</h3><div class='grid' id='pins'>…</div>"
+"<div class='ctl'>"
+"<button class='go go-on' onclick='wcmd(\"start\")'>Start Wallas</button>"
+"<button class='go go-off' onclick='wcmd(\"stop\")'>Stop Wallas</button>"
+"</div></div>"
 "<div class='ts' id='sts'></div></div>"
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>Radio Link</h3><div class='grid' id='wifi'>…</div></div>"
@@ -271,6 +296,14 @@ static const char INDEX_HTML[] =
 "driven, overriding normal operation until next reboot. Reserved pins "
 "(strapping: 4,5,8,9,15; USB-JTAG: 12,13) show status only, no buttons.</p>"
 "<div class='dbg' id='dbg'>…</div></div></div>"
+"<div id='timer' class='pane'>"
+"<div class='card'><h3>Weekly Wallas Timer</h3>"
+"<p class='warn' id='clock'>Clock: …</p>"
+"<p class='warn' id='tmrMode'></p>"
+"<div class='tbl-wrap'><table class='tmr' id='timerTbl'></table></div>"
+"<p class='warn' id='tmrNote' style='margin-top:8px'></p>"
+"<div class='ctl'><button class='go go-on' id='timerSetBtn' disabled onclick='saveAllTimer()'>Set</button></div>"
+"</div></div>"
 "<div id='wifinet' class='pane'>"
 "<div class='card'><h3>WiFi Network</h3>"
 "<div class='grid' id='wfLive'>…</div>"
@@ -342,6 +375,7 @@ static const char INDEX_HTML[] =
 "document.querySelectorAll('.tab').forEach(e=>e.classList.remove('on'));"
 "document.getElementById(id).classList.add('on');btn.classList.add('on');"
 "if(id==='debug'){fetchStatus();fetchDbg();fetchSys();}"
+"if(id==='timer')fetchTimer();"
 "if(id==='wifinet')fetchIpCfg();"
 "if(id==='ota'&&!g_verLoaded){g_verLoaded=true;verRefresh();}}"
 "function led(v){return '<div class=\"led '+(v?'on-l':'off-l')+'\"></div>';}"
@@ -361,7 +395,8 @@ static const char INDEX_HTML[] =
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
 "document.getElementById('pins').innerHTML="
-"row('Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
+"txtRow('Mode',d.sa?'<span class=\"warn\" style=\"margin:0\">Standalone</span>':'Following MasterRemote')+"
+"row(d.sa?'Start CMD (own timer / buttons)':'Start CMD from Master',d.cmd)+row('Wallas Relay ON (p19)',d.relay)+"
 "row('Wallas Running FB (p18)',d.run)+row('Heater Indicator LED (p23)',d.led);"
 "document.getElementById('wifi').innerHTML="
 "txtRow('Own MAC',d.mac||'\\u2014')+"
@@ -370,6 +405,53 @@ static const char INDEX_HTML[] =
 "txtRow('Master MAC',d.masterMac||'not discovered');"
 "document.getElementById('sts').textContent='Updated: '+hms();"
 "}).catch(()=>{});}"
+"function wcmd(a){fetch('/api/wallas/'+a,{method:'POST'}).then(function(){setTimeout(fetchStatus,700);}).catch(()=>{});}"
+"var DAY_NAMES=['Sun','Mon','Tue','Wed','Thu','Fri','Sat'];"
+"function buildTimer(){"
+"let h='<tr><th>Day</th><th>Enabled</th><th>Start</th><th>Stop</th></tr>';"
+"for(let d=0;d<7;d++){"
+"h+='<tr><td>'+DAY_NAMES[d]+'</td>'+"
+"'<td><input type=\"checkbox\" id=\"ten'+d+'\" onchange=\"markTimerDirty()\"></td>'+"
+"'<td><input type=\"time\" id=\"tst'+d+'\" onchange=\"markTimerDirty()\"></td>'+"
+"'<td><input type=\"time\" id=\"tsp'+d+'\" onchange=\"markTimerDirty()\"></td></tr>';}"
+"document.getElementById('timerTbl').innerHTML=h;}"
+/* Weekly Timer tab refresh (v1.56): polled every 2 s while open, but the
+ * table is only redrawn when the unit's timer rev has changed (an edit from
+ * MasterRemote or another browser) -- and never over unsaved edits or a
+ * field being typed in; then a note says so instead. */
+"var g_tmrRev=-1,g_tmrDirty=false;"
+"function markTimerDirty(){g_tmrDirty=true;document.getElementById('timerSetBtn').disabled=false;}"
+"function tmrBusy(){var a=document.activeElement;return g_tmrDirty||(a&&a!==document.body&&document.getElementById('timerTbl').contains(a));}"
+"function fetchTimer(force){"
+"fetch('/api/timer').then(r=>r.json()).then(d=>{"
+"document.getElementById('clock').textContent='Clock: '+d.now+' (CET/CEST)'+(d.synced?'':' \\u2014 NOT SYNCED YET')+"
+"(d.rev>=1704067200?' \\u2014 last change '+hms(new Date(d.rev*1000)):'');"
+"document.getElementById('tmrMode').textContent=d.sa?"
+"'Standalone: this timer drives the heater directly. It is copied to MasterRemote when one is present again (newest edit wins).':"
+"'MasterRemote present: this table is kept in sync with MasterRemote\\'s (newest edit wins), and MasterRemote applies it.';"
+"if(d.rev===g_tmrRev&&!force)return;"
+"var nt=document.getElementById('tmrNote');"
+"if(!force&&g_tmrRev>=0&&tmrBusy()){"
+"nt.innerHTML='The timer was changed on MasterRemote (or in another browser) while you were editing. '+"
+"'<b>Set</b> replaces it with your version, or <a href=\"#\" style=\"color:#e9b400\" '+"
+"'onclick=\"g_tmrDirty=false;fetchTimer(1);return false\">load the latest</a>.';return;}"
+"if(!force&&tmrBusy())return;"
+"nt.textContent='';g_tmrRev=d.rev;g_tmrDirty=false;"
+"d.days.forEach(function(x){"
+"document.getElementById('ten'+x.day).checked=x.enabled;"
+"document.getElementById('tst'+x.day).value=x.start;"
+"document.getElementById('tsp'+x.day).value=x.stop;});"
+"document.getElementById('timerSetBtn').disabled=true;"
+"}).catch(()=>{});}"
+"function saveAllTimer(){"
+"const btn=document.getElementById('timerSetBtn');btn.disabled=true;"
+"let ps=[];"
+"for(let d=0;d<7;d++){"
+"const en=document.getElementById('ten'+d).checked?1:0;"
+"const st=document.getElementById('tst'+d).value||'00:00';"
+"const sp=document.getElementById('tsp'+d).value||'00:00';"
+"ps.push(fetch('/api/timer/set?day='+d+'&enabled='+en+'&start='+st+'&stop='+sp,{method:'POST'}));}"
+"Promise.all(ps).then(function(){g_tmrDirty=false;fetchTimer(1);}).catch(()=>{btn.disabled=false;});}"
 "var DBG_PINS=[0,1,2,3,6,7,10,11,14,16,17,18,19,20,21,22,23];"
 "function buildDbg(){"
 "var h='';"
@@ -464,7 +546,7 @@ static const char INDEX_HTML[] =
  * /api/version in step with the copies in the sibling units. */
 /* 24-hour clock everywhere in the UI -- toLocaleTimeString() follows the
  * viewing browser's locale and rendered as 12-hour AM/PM here. */
-"function hms(){var d=new Date(),p=function(n){return(n<10?'0':'')+n;};"
+"function hms(t){var d=t||new Date(),p=function(n){return(n<10?'0':'')+n;};"
 "return p(d.getHours())+':'+p(d.getMinutes())+':'+p(d.getSeconds());}"
 "var VER_ROWS=[],g_verLoaded=false;"
 "function verEsc(s){return String(s).replace(/[&<>\"']/g,'');}"
@@ -558,9 +640,12 @@ static const char INDEX_HTML[] =
 "var dbOn=document.getElementById('debug').classList.contains('on');"
 "if(stOn||dbOn)fetchStatus();"
 "if(dbOn){fetchDbg();fetchSys();}"
+"if(document.getElementById('timer').classList.contains('on'))fetchTimer();"
 "},2000);"
 "fetchStatus();"
 "buildDbg();"
+"buildTimer();"
+"fetchTimer();"
 "fetchDbg();"
 "fetchSys();"
 "</script></body></html>";
@@ -594,6 +679,72 @@ static esp_err_t h_root(httpd_req_t *req)
     return ESP_OK;
 }
 
+/* POST /api/wallas/start | /api/wallas/stop  ── Status tab buttons (v1.56).
+ * With MasterRemote present, passed to it as its own web Start/Stop;
+ * standalone, they set this unit's own start flag. */
+static esp_err_t h_wallas_start(httpd_req_t *req)
+{
+    wallas_web_set(true);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+static esp_err_t h_wallas_stop(httpd_req_t *req)
+{
+    wallas_web_set(false);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* GET /api/timer  ── clock + all 7 days, same shape as MasterRemote's, plus
+ * the sync rev and whether this unit is standalone */
+static esp_err_t h_timer_get(httpd_req_t *req)
+{
+    char now_str[24];
+    timer_get_now_str(now_str, sizeof(now_str));
+
+    char buf[900];
+    int n = snprintf(buf, sizeof(buf), "{\"now\":\"%s\",\"synced\":%s,\"rev\":%lu,\"sa\":%s,\"days\":[",
+                     now_str, timer_is_synced() ? "true" : "false",
+                     (unsigned long)timer_get_rev(), master_present() ? "false" : "true");
+    for (int d = 0; d < 7 && n < (int)sizeof(buf) - 80; d++) {
+        bool en; int sh, sm, ph, pm;
+        timer_get_day(d, &en, &sh, &sm, &ph, &pm);
+        n += snprintf(buf + n, sizeof(buf) - n,
+                      "%s{\"day\":%d,\"enabled\":%s,\"start\":\"%02d:%02d\",\"stop\":\"%02d:%02d\"}",
+                      d ? "," : "", d, en ? "true" : "false", sh, sm, ph, pm);
+    }
+    snprintf(buf + n, sizeof(buf) - n, "]}");
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_sendstr(req, buf);
+    return ESP_OK;
+}
+
+/* POST /api/timer/set?day=N&enabled=0|1&start=HH:MM&stop=HH:MM  ── save one day */
+static esp_err_t h_timer_set(httpd_req_t *req)
+{
+    char query[96] = {0};
+    char day_str[4] = {0}, en_str[4] = {0}, start_str[8] = {0}, stop_str[8] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing query");
+        return ESP_OK;
+    }
+    httpd_query_key_value(query, "day",     day_str,   sizeof(day_str));
+    httpd_query_key_value(query, "enabled", en_str,    sizeof(en_str));
+    httpd_query_key_value(query, "start",   start_str, sizeof(start_str));
+    httpd_query_key_value(query, "stop",    stop_str,  sizeof(stop_str));
+
+    int day = atoi(day_str);
+    bool enabled = atoi(en_str) != 0;
+    int start_hh = 0, start_mm = 0, stop_hh = 0, stop_mm = 0;
+    sscanf(start_str, "%d:%d", &start_hh, &start_mm);
+    sscanf(stop_str,  "%d:%d", &stop_hh,  &stop_mm);
+
+    timer_set_day(day, enabled, start_hh, start_mm, stop_hh, stop_mm);
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
 static esp_err_t h_status(httpd_req_t *req)
 {
     wifi_ap_record_t ap_info = {0};
@@ -613,17 +764,20 @@ static esp_err_t h_status(httpd_req_t *req)
                  g_master_mac[0], g_master_mac[1], g_master_mac[2],
                  g_master_mac[3], g_master_mac[4], g_master_mac[5]);
 
-    char buf[288];
+    char buf[340];
     snprintf(buf, sizeof(buf),
         "{\"cmd\":%s,\"relay\":%s,\"run\":%s,\"led\":%s,\"rssi\":%d,\"ch\":%d,\"enRssi\":%d,\"enCh\":%d,"
-        "\"mac\":\"%s\",\"masterMac\":\"%s\"}",
+        "\"mac\":\"%s\",\"masterMac\":\"%s\",\"sa\":%s,\"lw\":%s,\"ta\":%s}",
         g_start_cmd                         ? "true":"false",
         gpio_get_level(PIN_WALLAS_RELAY)    ? "true":"false",
         g_wallas_running                    ? "true":"false",
         gpio_get_level(PIN_HEATER_LED)      ? "true":"false",
         (int)ap_info.rssi, (int)ap_info.primary,
         (int)g_espnow_rssi, (int)g_espnow_channel,
-        mac_str, master_mac_str);
+        mac_str, master_mac_str,
+        master_present()                    ? "false":"true",   /* sa: standalone */
+        wallas_local_web_start()            ? "true":"false",   /* lw: local Start (standalone) */
+        wallas_timer_active()               ? "true":"false");  /* ta: own timer window (standalone) */
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
     return ESP_OK;
@@ -1408,7 +1562,7 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server=NULL;
     httpd_config_t cfg=HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers=20;   /* headroom above the current route count -- an exact-fit cap
+    cfg.max_uri_handlers=28;   /* headroom above the current route count -- an exact-fit cap
                                   silently drops routes registered after the limit is hit, and
                                   the registration loop below now logs if that happens (SlaveHonda
                                   hit exactly this in v1.9.0: /ota/upload silently never registered) */
@@ -1429,6 +1583,10 @@ esp_err_t web_server_start(void)
         {.uri="/",                .method=HTTP_GET,  .handler=h_root        },
         {.uri="/api/status",      .method=HTTP_GET,  .handler=h_status      },
         {.uri="/api/sysinfo",     .method=HTTP_GET,  .handler=h_sysinfo     },
+        {.uri="/api/wallas/start",.method=HTTP_POST, .handler=h_wallas_start},
+        {.uri="/api/wallas/stop", .method=HTTP_POST, .handler=h_wallas_stop },
+        {.uri="/api/timer",       .method=HTTP_GET,  .handler=h_timer_get   },
+        {.uri="/api/timer/set",   .method=HTTP_POST, .handler=h_timer_set   },
         {.uri="/api/gpio/set",    .method=HTTP_GET,  .handler=h_gpio_set    },
         {.uri="/api/gpio/status", .method=HTTP_GET,  .handler=h_gpio_status },
         {.uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },

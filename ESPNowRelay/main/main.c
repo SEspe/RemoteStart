@@ -107,6 +107,21 @@ typedef struct {
     char    fw_version[12];
 } slave_wallas_msg_t;           /* 65 bytes */
 
+/* Weekly-timer sync and SlaveWallas's Start/Stop buttons (v1.56). Packed on
+ * every unit so ESP32 and ESP32-C6 agree; sizes distinct from the above. */
+typedef struct __attribute__((packed)) {
+    char     label[32];         /* "Master->WallasTimer" or "SlaveWallas->Timer" */
+    uint32_t rev;
+    uint8_t  day[7][5];
+} wallas_timer_msg_t;           /* 71 bytes */
+_Static_assert(sizeof(wallas_timer_msg_t) == 71, "wallas_timer_msg_t wire size");
+
+typedef struct __attribute__((packed)) {
+    char    label[32];          /* "SlaveWallas->WebCmd" */
+    uint8_t start;
+} wallas_webcmd_msg_t;          /* 33 bytes */
+_Static_assert(sizeof(wallas_webcmd_msg_t) == 33, "wallas_webcmd_msg_t wire size");
+
 /* ── Relay State (shared with web_server.c via web_server.h) ────────────────── */
 traffic_stat_t g_traffic[TC_COUNT] = {0};
 relay_peer_t   g_peer_master = {0};
@@ -458,6 +473,35 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
             else g_traffic[TC_HB_WALLAS].fwd_fail++;
             return;
         }
+    }
+
+    /* Timer sync and button presses between Master and SlaveWallas (v1.56).
+     * Only from the peers already trusted for each role -- these never claim
+     * a role themselves; counted with the Wallas command/heartbeat traffic. */
+    bool from_master = g_peer_master.known && memcmp(src, g_peer_master.mac, 6) == 0;
+    bool from_wallas = g_peer_wallas.known && memcmp(src, g_peer_wallas.mac, 6) == 0;
+
+    if (len == (int)sizeof(wallas_timer_msg_t)) {
+        if (from_master && strncmp((const char *)data, "Master->WallasTimer", 19) == 0) {
+            note_rx(TC_CMD_WALLAS, src, rssi);
+            if (g_peer_wallas.known) forward(TC_CMD_WALLAS, g_peer_wallas.mac, data, len);
+            else g_traffic[TC_CMD_WALLAS].fwd_fail++;
+            return;
+        }
+        if (from_wallas && strncmp((const char *)data, "SlaveWallas->Timer", 18) == 0) {
+            note_rx(TC_HB_WALLAS, src, rssi);
+            if (g_peer_master.known) forward(TC_HB_WALLAS, g_peer_master.mac, data, len);
+            else g_traffic[TC_HB_WALLAS].fwd_fail++;
+            return;
+        }
+    }
+
+    if (len == (int)sizeof(wallas_webcmd_msg_t) && from_wallas &&
+        strncmp((const char *)data, "SlaveWallas->WebCmd", 19) == 0) {
+        note_rx(TC_HB_WALLAS, src, rssi);
+        if (g_peer_master.known) forward(TC_HB_WALLAS, g_peer_master.mac, data, len);
+        else g_traffic[TC_HB_WALLAS].fwd_fail++;
+        return;
     }
 
     note_rx(TC_OTHER, src, rssi);

@@ -19,12 +19,18 @@
  * factory MAC, listens for MasterRemote's discovery beacon, and registers
  * itself via its normal heartbeat — see FSD_RemoteStart.md §3.2. WiFi is
  * mandatory for this unit (Wallas is expected to always be within range).
+ *
+ * Standalone (v1.56): with no MasterRemote heard for 30 s the relay follows
+ * this unit's own weekly timer and Start/Stop buttons instead; while Master
+ * is present it follows Master, the buttons act through Master, and the two
+ * weekly timers are kept in sync (last edit wins) — see FSD §3.5.
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <stdbool.h>
 #include <stdint.h>
+#include <time.h>
 
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
@@ -36,6 +42,7 @@
 #include "esp_event.h"
 #include "esp_now.h"
 #include "esp_netif.h"
+#include "esp_netif_sntp.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -78,6 +85,22 @@ typedef struct {
     uint8_t channel;   /* channel that frame was received on */
     char    fw_version[12];
 } slave_wallas_msg_t;
+
+/* Weekly-timer sync and the Start/Stop buttons (v1.56) -- byte-identical to
+ * MasterRemote's and ESPNowRelay's copies. Types are told apart by length, so
+ * these sizes (71, 33) must stay distinct from the others (32, 35, 65, 66). */
+typedef struct __attribute__((packed)) {
+    char     label[32];     /* "Master->WallasTimer" or "SlaveWallas->Timer" */
+    uint32_t rev;           /* last-edit-wins: the higher rev is kept by both */
+    uint8_t  day[7][5];     /* enabled, start hh, start mm, stop hh, stop mm; [0] = Sunday */
+} wallas_timer_msg_t;
+_Static_assert(sizeof(wallas_timer_msg_t) == 71, "wallas_timer_msg_t wire size");
+
+typedef struct __attribute__((packed)) {
+    char    label[32];      /* "SlaveWallas->WebCmd" */
+    uint8_t start;          /* 1 = Start Wallas pressed, 0 = Stop Wallas */
+} wallas_webcmd_msg_t;
+_Static_assert(sizeof(wallas_webcmd_msg_t) == 33, "wallas_webcmd_msg_t wire size");
 
 /* ── Global State ────────────────────────────────────────────────────────────── */
 volatile bool     g_start_cmd     = false;
@@ -304,6 +327,173 @@ static void wallas_stop(void) {
     gpio_set_level(PIN_HEATER_LED, 0);
 }
 
+/* ── Who drives the relay (v1.56) ─────────────────────────────────────────────
+ * Master present (beacon within 30 s): the relay follows Master's command,
+ * which already ORs the Victron relay, manual switch, web buttons (Master's
+ * and ours, see wallas_web_set) and the shared weekly timer.
+ * Standalone: the relay follows this unit's own Start/Stop and weekly timer.
+ * Losing Master therefore drops its sources; the heater stays on only if our
+ * own timer or a local Start asks for it. */
+static volatile bool s_master_cmd       = false;  /* last command from Master */
+static volatile bool s_master_cmd_valid = false;  /* one has arrived since Master was (re)found */
+static volatile bool s_local_web_start  = false;  /* Start pressed here while standalone */
+static volatile bool s_timer_active     = false;  /* own timer window, evaluated while standalone */
+
+bool master_present(void)
+{
+    return g_master_known &&
+           (esp_timer_get_time() - s_master_last_seen_us) <= MASTER_STALE_US;
+}
+
+static void apply_relay(void)
+{
+    bool cmd;
+    if (master_present()) {
+        if (!s_master_cmd_valid) return;   /* hold until Master's first command */
+        cmd = s_master_cmd;
+    } else {
+        cmd = s_local_web_start || s_timer_active;
+    }
+    if (cmd != g_start_cmd || gpio_get_level(PIN_WALLAS_RELAY) != (int)cmd) {
+        g_start_cmd = cmd;
+        if (cmd) wallas_start(); else wallas_stop();
+    }
+}
+
+bool wallas_local_web_start(void) { return s_local_web_start; }
+bool wallas_timer_active(void)    { return s_timer_active; }
+
+/* ── Weekly timer (same table and rules as MasterRemote's, §6.1a) ─────────── */
+#define NTP_MIN_VALID_EPOCH  1704067200   /* 2024-01-01 UTC */
+#define WALLAS_TZ  "CET-1CEST,M3.5.0,M10.5.0/3"   /* Europe/Oslo, auto DST */
+#define TIMER_SYNC_INTERVAL_US  ((int64_t)60 * 1000000)
+
+typedef struct {
+    bool    enabled;
+    uint8_t start_hh, start_mm;
+    uint8_t stop_hh,  stop_mm;
+} day_timer_t;
+
+static day_timer_t s_wallas_timer[7] = {0};   /* [0] = Sunday, like struct tm.tm_wday */
+static uint32_t    s_timer_rev       = 0;
+static bool        s_ntp_synced      = false;
+static volatile int64_t   s_timer_sync_due_us = 0;
+static wallas_timer_msg_t s_timer_in;
+static volatile bool      s_timer_in_pending  = false;
+
+static void timer_nvs_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
+    size_t sz = sizeof(s_wallas_timer);
+    nvs_get_blob(h, "walltimer", s_wallas_timer, &sz);
+    nvs_get_u32(h, "walltrev", &s_timer_rev);
+    nvs_close(h);
+}
+
+static void timer_nvs_save(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
+    nvs_set_blob(h, "walltimer", s_wallas_timer, sizeof(s_wallas_timer));
+    nvs_set_u32(h, "walltrev", s_timer_rev);
+    nvs_commit(h);
+    nvs_close(h);
+}
+
+/* Edit time once NTP has synced, so the newer of the two units' edits wins;
+ * never lower than rev + 1, so it still rises before sync. */
+static uint32_t timer_next_rev(void)
+{
+    uint32_t now = (uint32_t)time(NULL);
+    return (now >= NTP_MIN_VALID_EPOCH && now > s_timer_rev) ? now : s_timer_rev + 1;
+}
+
+void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm)
+{
+    if (day < 0 || day > 6) { *enabled = false; *start_hh = *start_mm = *stop_hh = *stop_mm = 0; return; }
+    const day_timer_t *d = &s_wallas_timer[day];
+    *enabled  = d->enabled;
+    *start_hh = d->start_hh; *start_mm = d->start_mm;
+    *stop_hh  = d->stop_hh;  *stop_mm  = d->stop_mm;
+}
+
+void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_hh, int stop_mm)
+{
+    if (day < 0 || day > 6) return;
+    if (start_hh < 0 || start_hh > 23 || start_mm < 0 || start_mm > 59 ||
+        stop_hh  < 0 || stop_hh  > 23 || stop_mm  < 0 || stop_mm  > 59) return;
+    day_timer_t *d = &s_wallas_timer[day];
+    d->enabled  = enabled;
+    d->start_hh = (uint8_t)start_hh; d->start_mm = (uint8_t)start_mm;
+    d->stop_hh  = (uint8_t)stop_hh;  d->stop_mm  = (uint8_t)stop_mm;
+    s_timer_rev = timer_next_rev();
+    timer_nvs_save();
+    s_timer_sync_due_us = esp_timer_get_time() + 1000000;   /* one send after the 7-day burst */
+}
+
+bool     timer_is_synced(void) { return s_ntp_synced; }
+uint32_t timer_get_rev(void)   { return s_timer_rev; }
+
+void timer_get_now_str(char *buf, size_t sz)
+{
+    if (!s_ntp_synced) { snprintf(buf, sz, "not synced"); return; }
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    strftime(buf, sz, "%Y-%m-%d %H:%M:%S", &tm_now);
+}
+
+static void ntp_init(void)
+{
+    setenv("TZ", WALLAS_TZ, 1);
+    tzset();
+    esp_sntp_config_t cfg = ESP_NETIF_SNTP_DEFAULT_CONFIG("pool.ntp.org");
+    esp_netif_sntp_init(&cfg);
+}
+
+static bool timer_window_active(void)
+{
+    if (!s_ntp_synced) return false;
+    time_t now = time(NULL);
+    struct tm tm_now;
+    localtime_r(&now, &tm_now);
+    const day_timer_t *d = &s_wallas_timer[tm_now.tm_wday];
+    if (!d->enabled) return false;
+    int cur   = tm_now.tm_hour * 60 + tm_now.tm_min;
+    int start = d->start_hh * 60 + d->start_mm;
+    int stop  = d->stop_hh  * 60 + d->stop_mm;
+    return (start <= stop) ? (cur >= start && cur < stop)
+                           : (cur >= start || cur < stop);   /* wraps past midnight */
+}
+
+static void timer_fill_msg(wallas_timer_msg_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    strlcpy(m->label, "SlaveWallas->Timer", sizeof(m->label));
+    m->rev = s_timer_rev;
+    for (int d = 0; d < 7; d++) {
+        m->day[d][0] = s_wallas_timer[d].enabled ? 1 : 0;
+        m->day[d][1] = s_wallas_timer[d].start_hh; m->day[d][2] = s_wallas_timer[d].start_mm;
+        m->day[d][3] = s_wallas_timer[d].stop_hh;  m->day[d][4] = s_wallas_timer[d].stop_mm;
+    }
+}
+
+static bool timer_apply_msg(const wallas_timer_msg_t *m)
+{
+    if (m->rev <= s_timer_rev) return false;
+    for (int d = 0; d < 7; d++) {
+        const uint8_t *x = m->day[d];
+        if (x[1] > 23 || x[2] > 59 || x[3] > 23 || x[4] > 59) continue;
+        s_wallas_timer[d].enabled  = x[0] != 0;
+        s_wallas_timer[d].start_hh = x[1]; s_wallas_timer[d].start_mm = x[2];
+        s_wallas_timer[d].stop_hh  = x[3]; s_wallas_timer[d].stop_mm  = x[4];
+    }
+    s_timer_rev = m->rev;
+    timer_nvs_save();
+    return true;
+}
+
 /* ── ESP-NOW ─────────────────────────────────────────────────────────────────── */
 static void espnow_add_peer(const uint8_t *mac) {
     esp_now_peer_info_t peer = {0};
@@ -367,6 +557,14 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         send_status();   /* immediate registration heartbeat */
         return;
     }
+    if (len == (int)sizeof(wallas_timer_msg_t)) {
+        if (!g_master_known || memcmp(info->src_addr, g_master_mac, 6) != 0) return;
+        if (strncmp((const char *)data, "Master->WallasTimer", 19) != 0) return;
+        if (s_timer_in_pending) return;   /* the next periodic send covers it */
+        memcpy(&s_timer_in, data, sizeof(s_timer_in));
+        s_timer_in_pending = true;
+        return;
+    }
     if (len != (int)sizeof(master_msg_t)) return;
     if (!g_master_known || memcmp(info->src_addr, g_master_mac, 6) != 0) {
         ESP_LOGW(TAG, "Ignoring command from unrecognized sender " MACSTR, MAC2STR(info->src_addr));
@@ -376,9 +574,38 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
     master_msg_t msg;
     memcpy(&msg, data, sizeof(msg));
     ESP_LOGI(TAG, "Recv WallasStart=%d", msg.HondaStart);
-    g_start_cmd = msg.HondaStart;
-    if (g_start_cmd) wallas_start(); else wallas_stop();
+    s_master_cmd       = msg.HondaStart;
+    s_master_cmd_valid = true;
+    apply_relay();
     send_status();
+}
+
+static void send_timer_to_master(void)
+{
+    wallas_timer_msg_t m;
+    timer_fill_msg(&m);
+    esp_now_send(g_master_mac, (uint8_t *)&m, sizeof(m));
+}
+
+static void send_webcmd_to_master(bool start)
+{
+    wallas_webcmd_msg_t m = {0};
+    strlcpy(m.label, "SlaveWallas->WebCmd", sizeof(m.label));
+    m.start = start ? 1 : 0;
+    esp_now_send(g_master_mac, (uint8_t *)&m, sizeof(m));
+}
+
+/* Start/Stop Wallas on this unit's Status tab. With Master present it is the
+ * same as pressing it on Master (so both pages agree); standalone it sets our
+ * own start flag. */
+void wallas_web_set(bool start)
+{
+    if (master_present()) {
+        send_webcmd_to_master(start);
+    } else {
+        s_local_web_start = start;
+        apply_relay();
+    }
 }
 
 static void espnow_init(void) {
@@ -423,9 +650,55 @@ static void status_task(void *arg) {
     }
 }
 
+/* Mode transitions, own timer, and timer sync -- once a second. */
+static void control_task(void *arg) {
+    bool was_present = false;
+    for (;;) {
+        time_t now_s = time(NULL);
+        if (!s_ntp_synced && now_s >= NTP_MIN_VALID_EPOCH) {
+            s_ntp_synced = true;
+            ESP_LOGI(TAG, "NTP synced");
+        }
+
+        bool present = master_present();
+        if (present && !was_present) {
+            ESP_LOGI(TAG, "MasterRemote present -- following it");
+            /* A Start pressed here while standalone becomes Master's web start,
+             * so the heater doesn't drop when Master takes over. Heartbeat
+             * first, so a Master that lost its roster accepts the press. */
+            send_status();
+            if (s_local_web_start) send_webcmd_to_master(true);
+            s_local_web_start   = false;
+            s_timer_sync_due_us = 0;
+        } else if (!present && was_present) {
+            ESP_LOGW(TAG, "MasterRemote gone -- standalone");
+            s_master_cmd_valid = false;
+        }
+        was_present = present;
+
+        s_timer_active = !present && timer_window_active();
+        apply_relay();
+
+        if (s_timer_in_pending) {
+            if (timer_apply_msg(&s_timer_in))
+                ESP_LOGI(TAG, "Weekly timer taken from MasterRemote (rev %lu)", (unsigned long)s_timer_rev);
+            else if (s_timer_in.rev < s_timer_rev)
+                s_timer_sync_due_us = 0;   /* ours is newer -- send it back now */
+            s_timer_in_pending = false;
+        }
+        int64_t now = esp_timer_get_time();
+        if (present && now >= s_timer_sync_due_us) {
+            s_timer_sync_due_us = now + TIMER_SYNC_INTERVAL_US;
+            send_timer_to_master();
+        }
+
+        vTaskDelay(pdMS_TO_TICKS(1000));
+    }
+}
+
 static void heartbeat_task(void *arg) {
     for (;;) {
-        /* Fast blink when start commanded by Master, slow when idle. Keyed off
+        /* Fast blink when start commanded (by Master, or locally when standalone), slow when idle. Keyed off
          * g_start_cmd (not g_wallas_running) since the running-feedback sensor
          * (PIN_WALLAS_FB) may not be wired up. */
         uint32_t half_ms = g_start_cmd ? 200 : 1000;
@@ -449,9 +722,14 @@ void app_main(void)
     wifi_init_and_connect();
     espnow_init();
 
+    /* Standalone support: own clock and weekly timer (WiFi is up by now) */
+    ntp_init();
+    timer_nvs_load();
+
     xTaskCreate(status_task,       "status",   3072, NULL, 4, NULL);
     xTaskCreate(heartbeat_task,    "heartbeat",1024, NULL, 2, NULL);
     xTaskCreate(config_apply_task, "cfgapply", 2048, NULL, 3, NULL);
+    xTaskCreate(control_task,      "control",  3072, NULL, 4, NULL);
 
     ESP_LOGI(TAG, "Ready");
 }

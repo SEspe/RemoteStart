@@ -96,6 +96,25 @@ typedef struct {
     char    fw_version[12];
 } slave_wallas_msg_t;
 
+/* Weekly-timer sync and SlaveWallas's Start/Stop buttons (v1.56). Packed so
+ * the ESP32 and ESP32-C6 builds agree byte for byte. Every unit tells message
+ * types apart by length, so these sizes (71, 33) must stay distinct from the
+ * others (32, 35, 65, 66) -- ESPNowRelay relies on that too. */
+typedef struct __attribute__((packed)) {
+    char     label[32];     /* "Master->WallasTimer" or "SlaveWallas->Timer" */
+    uint32_t rev;           /* last-edit-wins: the higher rev is kept by both */
+    uint8_t  day[7][5];     /* enabled, start hh, start mm, stop hh, stop mm; [0] = Sunday */
+} wallas_timer_msg_t;
+_Static_assert(sizeof(wallas_timer_msg_t) == 71, "wallas_timer_msg_t wire size");
+
+typedef struct __attribute__((packed)) {
+    char    label[32];      /* "SlaveWallas->WebCmd" */
+    uint8_t start;          /* 1 = Start Wallas pressed, 0 = Stop Wallas */
+} wallas_webcmd_msg_t;
+_Static_assert(sizeof(wallas_webcmd_msg_t) == 33, "wallas_webcmd_msg_t wire size");
+
+#define TIMER_SYNC_INTERVAL_US  ((int64_t)60 * 1000000)
+
 /* ── Global State (written from ISR + read from task) ──────────────────────── */
 volatile bool g_honda_start_cmd  = false;
 volatile bool g_wallas_start_cmd = false;
@@ -115,6 +134,10 @@ volatile bool g_web_wallas_start = false;
  * flag forces one send regardless, bypassing both the mismatch check and
  * the restart-block cooldown, then clears itself. */
 volatile bool g_honda_force_send = false;
+
+/* Sends the Wallas command now instead of at the next WALLAS_SEND_INTERVAL_MS
+ * tick -- set when SlaveWallas (re)registers or presses a button there. */
+volatile bool g_wallas_force_send = false;
 
 /* Self-sampled heap low-water mark, paired with a timestamp -- esp_get_minimum_free_heap_size()
  * tracks the exact minimum but has no "when", so this is sampled alongside it in timer_task's
@@ -208,12 +231,20 @@ typedef struct {
 static day_timer_t s_wallas_timer[7] = {0};
 static bool        s_ntp_synced      = false;
 
+/* Revision of the timer table, shared with SlaveWallas (v1.56): every local
+ * edit raises it, and on contact both units keep the table with the higher
+ * rev. See timer_next_rev(). */
+static uint32_t s_timer_rev = 0;
+
 static void timer_nvs_load(void)
 {
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;
     size_t sz = sizeof(s_wallas_timer);
-    nvs_get_blob(h, "walltimer", s_wallas_timer, &sz);   /* leaves defaults (all disabled) if absent */
+    bool have_table = nvs_get_blob(h, "walltimer", s_wallas_timer, &sz) == ESP_OK;   /* leaves defaults (all disabled) if absent */
+    /* A table saved before v1.56 has no rev; give it 1 so it outranks a
+     * never-edited SlaveWallas (rev 0) and gets copied there. */
+    if (nvs_get_u32(h, "walltrev", &s_timer_rev) != ESP_OK) s_timer_rev = have_table ? 1 : 0;
     nvs_close(h);
 }
 
@@ -222,8 +253,52 @@ static void timer_nvs_save(void)
     nvs_handle_t h;
     if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) != ESP_OK) return;
     nvs_set_blob(h, "walltimer", s_wallas_timer, sizeof(s_wallas_timer));
+    nvs_set_u32(h, "walltrev", s_timer_rev);
     nvs_commit(h);
     nvs_close(h);
+}
+
+/* The wall-clock time of the edit once NTP has synced, so "last edit wins"
+ * holds across the two units; never lower than the current rev + 1, so it
+ * still rises before sync or within the same second. */
+static uint32_t timer_next_rev(void)
+{
+    uint32_t now = (uint32_t)time(NULL);
+    return (now >= 1704067200u && now > s_timer_rev) ? now : s_timer_rev + 1;
+}
+
+/* ── Timer sync with SlaveWallas over ESP-NOW (v1.56) ─────────────────────── */
+static volatile int64_t   s_timer_sync_due_us = 0;      /* next send; 0 = now */
+static wallas_timer_msg_t s_timer_in;                   /* received, applied by master_task */
+static volatile bool      s_timer_in_pending  = false;
+
+static void timer_fill_msg(wallas_timer_msg_t *m)
+{
+    memset(m, 0, sizeof(*m));
+    strlcpy(m->label, "Master->WallasTimer", sizeof(m->label));
+    m->rev = s_timer_rev;
+    for (int d = 0; d < 7; d++) {
+        m->day[d][0] = s_wallas_timer[d].enabled ? 1 : 0;
+        m->day[d][1] = s_wallas_timer[d].start_hh; m->day[d][2] = s_wallas_timer[d].start_mm;
+        m->day[d][3] = s_wallas_timer[d].stop_hh;  m->day[d][4] = s_wallas_timer[d].stop_mm;
+    }
+}
+
+/* Adopts a received table if it is newer; a wholly invalid day is skipped
+ * rather than trusted. Returns true if adopted. */
+static bool timer_apply_msg(const wallas_timer_msg_t *m)
+{
+    if (m->rev <= s_timer_rev) return false;
+    for (int d = 0; d < 7; d++) {
+        const uint8_t *x = m->day[d];
+        if (x[1] > 23 || x[2] > 59 || x[3] > 23 || x[4] > 59) continue;
+        s_wallas_timer[d].enabled  = x[0] != 0;
+        s_wallas_timer[d].start_hh = x[1]; s_wallas_timer[d].start_mm = x[2];
+        s_wallas_timer[d].stop_hh  = x[3]; s_wallas_timer[d].stop_mm  = x[4];
+    }
+    s_timer_rev = m->rev;
+    timer_nvs_save();
+    return true;
 }
 
 /* ── Timer accessors for web_server.c (function interface, not shared struct
@@ -246,8 +321,13 @@ void timer_set_day(int day, bool enabled, int start_hh, int start_mm, int stop_h
     d->enabled  = enabled;
     d->start_hh = (uint8_t)start_hh; d->start_mm = (uint8_t)start_mm;
     d->stop_hh  = (uint8_t)stop_hh;  d->stop_mm  = (uint8_t)stop_mm;
+    s_timer_rev = timer_next_rev();
     timer_nvs_save();
+    /* The tab saves all 7 days in a burst; one send a second later carries them all. */
+    s_timer_sync_due_us = esp_timer_get_time() + 1000000;
 }
+
+uint32_t timer_get_rev(void) { return s_timer_rev; }
 
 bool timer_is_synced(void) { return s_ntp_synced; }
 
@@ -658,7 +738,14 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
         slave_wallas_msg_t msg;
         memcpy(&msg, data, sizeof(msg));
         if (strncmp(msg.label, "SlaveWallas", 11) == 0) {
+            bool was_connected = node_connected(&g_slave_wallas);
             if (!register_peer(&g_slave_wallas, src)) return;
+            if (!was_connected) {
+                /* Newly (re)joined -- possibly after running standalone: give it
+                 * the command and compare timers now, not at the next tick. */
+                g_wallas_force_send = true;
+                s_timer_sync_due_us = 0;
+            }
             g_slave_wallas.last_seen_us  = esp_timer_get_time();
             g_slave_wallas.wallas_running = msg.WallasRunning;
             g_slave_wallas.has_wifi       = msg.has_wifi;
@@ -667,7 +754,38 @@ static void espnow_recv_cb(const esp_now_recv_info_t *info,
             strlcpy(g_slave_wallas.ip, msg.ip, sizeof(g_slave_wallas.ip));
             strlcpy(g_slave_wallas.fw_version, msg.fw_version, sizeof(g_slave_wallas.fw_version));
         }
+        return;
     }
+
+    /* The two SlaveWallas -> Master messages below are only trusted from the
+     * MAC that holds the SlaveWallas role (the relay's MAC when relayed). */
+    bool from_wallas = g_slave_wallas.peer_added && memcmp(src, g_slave_wallas.mac, 6) == 0;
+
+    if (len == (int)sizeof(wallas_timer_msg_t) && from_wallas) {
+        if (strncmp((const char *)data, "SlaveWallas->Timer", 18) != 0) return;
+        if (s_timer_in_pending) return;   /* previous one not applied yet; the next periodic send covers it */
+        memcpy(&s_timer_in, data, sizeof(s_timer_in));
+        s_timer_in_pending = true;
+        return;
+    }
+
+    if (len == (int)sizeof(wallas_webcmd_msg_t) && from_wallas) {
+        wallas_webcmd_msg_t m;
+        memcpy(&m, data, sizeof(m));
+        if (strncmp(m.label, "SlaveWallas->WebCmd", 19) != 0) return;
+        /* Exactly what this unit's own Start/Stop Wallas buttons do. */
+        g_web_wallas_start  = m.start != 0;
+        g_wallas_start_cmd  = wallas_cmd_compute();
+        g_wallas_force_send = true;
+        ESP_LOGI(TAG, "Wallas %s pressed on SlaveWallas", m.start ? "Start" : "Stop");
+    }
+}
+
+static void send_timer_to_wallas(void)
+{
+    wallas_timer_msg_t m;
+    timer_fill_msg(&m);
+    esp_now_send(g_slave_wallas.mac, (uint8_t *)&m, sizeof(m));
 }
 
 static void espnow_init(void)
@@ -809,10 +927,27 @@ static void master_task(void *arg)
             send_to_honda();
         }
 
-        /* Wallas: periodic refresh */
-        if ((now - last_wallas_send_us) >= (int64_t)WALLAS_SEND_INTERVAL_MS * 1000) {
+        /* Wallas: periodic refresh, or now if forced */
+        if (g_wallas_force_send ||
+            (now - last_wallas_send_us) >= (int64_t)WALLAS_SEND_INTERVAL_MS * 1000) {
             last_wallas_send_us = now;
+            g_wallas_force_send = false;
             send_to_wallas();
+        }
+
+        /* Weekly timer sync with SlaveWallas: adopt a newer table it sent,
+         * send ours back if it was older, and send ours every minute. */
+        if (s_timer_in_pending) {
+            if (timer_apply_msg(&s_timer_in)) {
+                ESP_LOGI(TAG, "Weekly timer taken from SlaveWallas (rev %lu)", (unsigned long)s_timer_rev);
+            } else if (s_timer_in.rev < s_timer_rev) {
+                s_timer_sync_due_us = 0;
+            }
+            s_timer_in_pending = false;
+        }
+        if (node_connected(&g_slave_wallas) && now >= s_timer_sync_due_us) {
+            s_timer_sync_due_us = now + TIMER_SYNC_INTERVAL_US;
+            send_timer_to_wallas();
         }
 
         /* Heartbeat LED: 1 Hz */

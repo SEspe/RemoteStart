@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.55  
+**Version:** 1.56  
 **Author:** SEspe  
 **Date:** 2026-10-11  
 
@@ -49,7 +49,7 @@ MasterRemote and SlaveWallas connect to a local WiFi network for web-based monit
 |--------------|----------|---------------------------------------------|-------------------|
 | MasterRemote  | ESP32    | Master — relay/button input, ESP-NOW hub    | Required          |
 | SlaveHonda   | ESP32    | Function slave — Honda generator control    | Preferred; falls back to ESP-NOW channel scan (§3.2) if unreachable |
-| SlaveWallas  | ESP32-C6 | Function slave — Wallas heater control      | Required          |
+| SlaveWallas  | ESP32-C6 | Function slave — Wallas heater control; runs standalone without MasterRemote (§3.5) | Required          |
 | ESPNowRelay  | ESP32-C6 | Optional store-and-forward repeater (§13)   | Preferred; falls back to ESP-NOW channel scan (§3.2) if unreachable |
 
 Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never overridden with `esp_wifi_set_mac()`). Peer MAC addresses are not hardcoded anywhere in firmware — units identify each other by function role and self-register dynamically over ESP-NOW at boot (§3.2). This means any unit's hardware module can be replaced (new factory MAC) without reflashing or reconfiguring the other two.
@@ -206,6 +206,25 @@ typedef struct {
 } master_beacon_t;
 ```
 
+#### MasterRemote ↔ SlaveWallas weekly timer (`wallas_timer_msg_t`, §3.5)
+```c
+typedef struct __attribute__((packed)) {
+    char     label[32];   // "Master->WallasTimer" or "SlaveWallas->Timer"
+    uint32_t rev;         // revision; the higher one is kept by both units
+    uint8_t  day[7][5];   // enabled, start hh, start mm, stop hh, stop mm; [0] = Sunday
+} wallas_timer_msg_t;     // 71 bytes
+```
+
+#### SlaveWallas → Master button press (`wallas_webcmd_msg_t`, §3.5)
+```c
+typedef struct __attribute__((packed)) {
+    char    label[32];    // "SlaveWallas->WebCmd"
+    uint8_t start;        // 1 = Start Wallas, 0 = Stop Wallas
+} wallas_webcmd_msg_t;    // 33 bytes
+```
+
+Every unit tells message types apart **by length first**, then by label: 32 beacon, 33 button press, 35 command, 65 SlaveWallas heartbeat, 66 SlaveHonda heartbeat, 71 timer. A new message type must have a length distinct from all of these. The two above are `packed` so the ESP32 and ESP32-C6 builds agree byte for byte; each unit `_Static_assert`s their size.
+
 ### 3.4 Timing
 
 | Parameter                    | Value    | Description                                        |
@@ -220,6 +239,24 @@ typedef struct {
 | SlaveHonda scan dwell/channel  | 2.5 s    | Per-channel listen time during channel scan (> beacon interval, so a beacon is virtually guaranteed each pass) |
 | SlaveHonda full scan cycle     | ~32.5 s  | Worst case to find Master: 13 channels × 2.5 s        |
 | Node stale timeout             | 30 s     | No heartbeat within this window → Nodes tab shows "disconnected" and Master stops sending to that role |
+| SlaveWallas standalone after   | 30 s     | No beacon from its Master within this window → SlaveWallas runs standalone (§3.5) |
+| Weekly timer sync              | 60 s     | Each side sends its table while the other is present; also 1 s after an edit and immediately on (re)contact (§3.5) |
+
+### 3.5 SlaveWallas standalone mode and weekly timer sync
+
+SlaveWallas works with or without MasterRemote. Which one drives the Wallas relay is decided continuously, once a second:
+
+| State | When | Relay follows |
+|-------|------|---------------|
+| **Following MasterRemote** | A beacon from its Master within the last 30 s | Master's command (`master_msg_t`), which already ORs the Victron relay, manual switch, web Start/Stop and the weekly timer (§6.1a). SlaveWallas does not evaluate its own timer. |
+| **Standalone** | No Master beacon for 30 s, or never one since boot | SlaveWallas's own **Start/Stop** buttons ORed with its own copy of the **weekly timer**. Same "sticky OR" as on Master: Stop clears the button's demand, but an active timer window keeps the heater on. |
+
+- **Losing MasterRemote** drops every source that lives on Master. After 30 s the relay follows the local sources only, so the heater turns off unless the local timer or a local Start asks for it. No heater is left running with nobody in control.
+- **MasterRemote coming back:** SlaveWallas sends a heartbeat at once, so a Master that lost its roster registers it again. Master force-sends the Wallas command on (re)registration. Until that command arrives the relay holds its state. If **Start** had been pressed locally while standalone, SlaveWallas passes it to Master as a button press (below), so the heater does not drop at the hand-over.
+- **Start/Stop on SlaveWallas while Master is present** are sent to Master as `wallas_webcmd_msg_t` and act exactly like Master's own Start/Stop Wallas buttons (`g_web_wallas_start`), so both pages always agree.
+- **Weekly timer:** both units hold the full 7-day table in NVS (`walltimer` blob + `walltrev` u32 revision, in each unit's own namespace). Every edit on either unit raises its `rev` to the edit's wall-clock time (once NTP has synced; never lower than the old rev + 1), so **the newest edit wins**. While both are present, each sends `wallas_timer_msg_t` to the other every 60 s, 1 s after a local edit (one send covers the tab's 7-request save) and immediately on (re)contact. A receiver adopts a table with a higher rev and answers a lower one with its own. A MasterRemote table saved before this mechanism (no `walltrev`) counts as rev 1, so it outranks a never-edited SlaveWallas (rev 0) and is copied to it.
+- **Trust:** SlaveWallas accepts timer messages only from its registered Master MAC; MasterRemote accepts timer and button messages only from the MAC holding the SlaveWallas role. When relayed, both are the relay's MAC (§13), the same as for commands and heartbeats.
+- SlaveWallas runs its own SNTP client (`pool.ntp.org`, `Europe/Oslo` TZ, same as Master) so its timer works standalone. Before the first sync its timer contributes nothing.
 
 ---
 
@@ -342,7 +379,7 @@ Access at: `http://<MasterRemote-IP>/`
 | Pin Status   | Live state of 5 pins + 3 global state flags + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
 | Debug (v1.40) | WiFi Link (own MAC v1.42, RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + Input Sources: one checkbox per physical input, staged and saved with one **Set** button (v1.55, §2.2) + Manual GPIO Test: live status dot for every GPIO, ON/OFF buttons on the non-reserved subset (v1.48 — note GPIO4/GPIO14 are externally-driven inputs on this unit, safe to read, not safe to drive) | 2 s auto |
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
-| Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
+| Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater, kept in sync with SlaveWallas (§3.5) | 2 s, rev-gated |
 | WiFi (v1.37) | WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open |
 | OTA Update   | Firmware Versions table for **all four units** — GitHub / Stored / Installed (v1.49, §7.3) + Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | On tab open + manual |
 
@@ -360,7 +397,7 @@ A background task (`timer_task`, 20 s tick) evaluates the current local day and 
 
 > **Same "sticky OR" behavior as the physical relay:** because this is one more source OR'd into the same command, manually pressing **Stop Wallas** during an active timer window only clears the *web* override — the timer's own contribution is still true, so `timer_task`'s next 20 s tick (or any GPIO edge) will turn it back on. This mirrors how a stuck-active Victron relay signal already behaves today; it is not a new inconsistency introduced by the timer.
 
-The Weekly Timer tab deliberately does **not** auto-refresh every 2 s like the other tabs (unlike Pin Status/Nodes) — its inputs are live, editable form fields, and periodic refresh would overwrite whatever the user is mid-typing. It only re-fetches when the tab is opened. Edits are staged locally, not saved per-field: changing any checkbox or time input only enables a single **Set** button below the table (disabled by default, and re-disabled once the save completes); clicking it fires one `POST /api/timer/set` per day (all 7) with the current form values in parallel.
+The Weekly Timer tab polls `/api/timer` every 2 s while it is open, but only redraws the table when `rev` has changed — an edit from SlaveWallas (§3.5) or another browser. It never overwrites unsaved edits or a field being typed in: in that case a note says the timer was changed on the other unit, that **Set** will replace it, and offers a link to load the latest instead. The clock line also shows the time of the last change. SlaveWallas's Weekly Timer tab behaves the same. Edits are staged locally, not saved per-field: changing any checkbox or time input only enables a single **Set** button below the table (disabled by default, and re-disabled once the save completes); clicking it fires one `POST /api/timer/set` per day (all 7) with the current form values in parallel.
 
 HTTP endpoints:
 
@@ -399,12 +436,13 @@ Access at: `http://<Slave-IP>/`
 
 | Tab        | Content                                               | Refresh  | Units |
 |------------|--------------------------------------------------------|----------|-------|
-| Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp | 2 s auto | Both  |
+| Status     | Relay states, running feedback, last received command, plus (SlaveWallas) heater indicator LED lamp. **SlaveWallas:** a Mode line (Following MasterRemote / Standalone) and **Start Wallas / Stop Wallas** buttons (§3.5) | 2 s auto | Both  |
 | Debug (v1.40, renamed from "Debug GPIO") | Radio Link card (own MAC, v1.42; WiFi AP RSSI + channel, v1.33; ESP-NOW RSSI + channel + MasterRemote's MAC, v1.41/v1.42) + System resource monitor (heap, uptime, WiFi reconnects, §10) + live status dot for every GPIO; ON/OFF buttons on the non-reserved subset (hardware bring-up) | 2 s auto | Both  |
+| Weekly Timer | Same 7-day table and staged **Set** button as MasterRemote's (§6.1a), kept in sync with it (§3.5); a line says whether this table is driving the heater (standalone) or MasterRemote is | 2 s, rev-gated (§6.1a) | SlaveWallas |
 | WiFi (v1.37) | WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open | Both |
 | OTA Update | Firmware Versions row for this unit — GitHub / Stored / Installed (v1.49, §7.3) + Install-from-GitHub-Releases card (v1.45) with a Go GitHub link (v1.48) + file input & XHR upload to `/ota/upload` | On tab open + manual | Both  |
 
-HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/api/version` + `/api/ota/github/latest` (v1.49, §7.3), `/api/ota/github/releases|install|progress` (v1.45), `/ota/upload`.
+HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), `/api/gpio/set?pin=N&level=0|1`, `/api/gpio/status`, `/wifi-setup`, `/api/scan`, `/wifi-save`, `/api/ipconfig`, `/api/ipconfig/save` (v1.37), `/api/reboot` (v1.38), `/api/version` + `/api/ota/github/latest` (v1.49, §7.3), `/api/ota/github/releases|install|progress` (v1.45), `/ota/upload`. SlaveWallas only: `POST /api/wallas/start|stop`, `GET /api/timer`, `POST /api/timer/set` (same parameters as Master's, §6.1). SlaveWallas's `/api/status` adds `sa` (standalone), `lw` (local Start active) and `ta` (own timer window active); its `/api/timer` adds `sa`. Both units' `/api/timer` include `rev`.
 
 `/api/gpio/set` forces a manipulable pin to OUTPUT and drives it (active, overrides normal operation). `/api/gpio/status` is read-only (`gpio_get_level()` on every GPIO, safe to call even on reserved pins since it never reconfigures anything) and backs the Debug tab's status dots — every pin gets a dot, only the non-reserved subset gets ON/OFF buttons. The non-reserved/manipulable set differs per chip:
 
@@ -724,6 +762,7 @@ ESPNowRelay is a fourth, optional unit (ESP32-C6) that extends ESP-NOW radio rea
 | Master discovery beacon (broadcast, §3.2) | Re-broadcast **verbatim**. A far slave that can't hear Master directly hears the relayed beacon (src = relay's MAC), adopts the relay as its "Master" once its direct claim goes stale, and unicasts its heartbeats to the relay. |
 | Slave heartbeat (unicast to the relay) | Learn/refresh that role's real MAC (staleness-gated, §3.2 semantics), then forward **verbatim** to the real Master. Master registers the relay's MAC as the role holder and unicasts that role's commands to the relay. |
 | Master command (unicast to the relay) | Destination picked from the label (`Master->SlaveHonda` / `Master->SlaveWallas`), forwarded **verbatim** to that slave's learned real MAC. Only accepted from the trusted Master MAC. |
+| Weekly timer / button press (§3.5) | `Master->WallasTimer` from the trusted Master goes to SlaveWallas; `SlaveWallas->Timer` and `SlaveWallas->WebCmd` from the learned SlaveWallas go to Master. Forwarded **verbatim**, counted with the Wallas command / heartbeat traffic. These never claim a role. |
 | Anything else (wrong size/label/sender) | Counted under "Other/unknown" for diagnostics, never relayed. |
 
 Because ESP-NOW unicast is only delivered to the addressed MAC, the relay never sees direct Master↔slave traffic — it only handles frames explicitly sent to it (or broadcasts). **Failover is automatic in both directions:** each unit keeps whichever peer (direct or relayed) it hears consistently, and re-homes within the 30 s staleness window when that path dies (§3.2). With all direct links healthy, the relay idles in passive standby — its re-broadcast beacons are ignored by slaves whose direct claim on Master is still fresh (each such slave logs a warning per relayed beacon on its serial console; cosmetic only).
