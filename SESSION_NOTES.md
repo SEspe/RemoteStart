@@ -2,7 +2,7 @@
 
 One long session: browser flasher, two firmware features, Wallas hardware docs with a safety
 disclaimer, MIT license, repo cleanup. Full detail is in [FSD_RemoteStart_CHANGELOG.md](FSD_RemoteStart_CHANGELOG.md)
-v1.54–v1.60; this file is the hand-over: what is where, what is verified, what is open.
+v1.54–v1.61; this file is the hand-over: what is where, what is verified, what is open.
 
 ## Shipped today
 
@@ -17,6 +17,7 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 | — | `cccbd90` | Hardware guide §3.2 links an **example (unverified) eBay listing** for the relay module. |
 | v1.60 | `fd59711` | **MIT license** (`LICENSE`, as BirdBox); README License section excludes the two third-party images. |
 | — | `9b18acf` | README **screenshots** of SlaveWallas (standalone Status tab, Weekly Timer tab), taken by the user on 1.7.2; stored in `docs/screenshots/`. |
+| v1.61 | `7a628cf`, **`v1.36.0`** | **`<unit>.local` + self-redirecting setup page:** DHCP hostname + mDNS on all four units (`masterremote`, `slavehonda`, `slavewallas`, `espnowrelay`); after Connect & Save / Save & Apply the Saved! page polls `<unit>.local` and opens it by itself; a note under each save button says so. MasterRemote 1.9.0, SlaveHonda 1.5.0, SlaveWallas 1.8.0, ESPNowRelay 1.3.0. The browser flasher serves these builds. |
 
 ## Decisions the user made (don't re-ask)
 
@@ -39,7 +40,7 @@ v1.54–v1.60; this file is the hand-over: what is where, what is verified, what
 | Unit | IP | MAC | Firmware |
 |------|----|-----|----------|
 | MasterRemote (spare board) | 192.168.10.224 | `30:AE:A4:4B:E1:78` | 1.8.2, input mask 5 (manual switches off — nothing wired) |
-| SlaveWallas | 192.168.10.220 | `98:A3:16:9D:8D:0C` | 1.7.2 |
+| SlaveWallas | 192.168.10.220 (`slavewallas.local`) | `98:A3:16:9D:8D:0C` | 1.8.0 |
 
 At the end of the session the test MasterRemote (.224) was **unplugged** and SlaveWallas was
 running standalone. Timer table: Sun 19:24–19:26 and Mon 19:22–19:25 saved but unticked, all
@@ -64,12 +65,12 @@ and had to clean up.
 
 ## Still open
 
-1. **Production units are NOT updated** — .100–.103 still run MasterRemote 1.6.15,
+1. **Production units are NOT updated** — latest release is **v1.36.0**. .100–.103 still run MasterRemote 1.6.15,
    SlaveHonda 1.4.13, SlaveWallas 1.6.13, ESPNowRelay 1.1.9 (1.1.12 never installed; it was
-   offline 2026-08-08). Update to **v1.35.0** from each OTA tab. **If ESPNowRelay is in the path,
+   offline 2026-08-08). Update to **v1.36.0** from each OTA tab. **If ESPNowRelay is in the path,
    update it with the others** — an old relay drops the new timer/button messages (sizes 71/33).
    Check SlaveWallas `/api/status` for an active command before rebooting it.
-2. **Untested:** a local Start made while standalone being handed to Master when it returns;
+2. **Untested:** `.local` names and the redirect on MasterRemote, SlaveHonda and ESPNowRelay (built, not run — verified only on SlaveWallas); a local Start made while standalone being handed to Master when it returns;
    anything through ESPNowRelay (no relay on the bench).
 3. **New SlaveWallas board (ESP32-C6 relay module):** example listing (unverified) is linked in
    Hardware Guide §3.2; the user has no link to their own purchase. Relay GPIO unknown. Find it on the bench
