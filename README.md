@@ -99,6 +99,20 @@ Or, from GitHub Releases (device needs internet access):
 2. Click **Refresh Releases**, pick a release, click **Install Selected**
 3. The device downloads and flashes it directly, then reboots
 
+## ⚠️ Safety and disclaimer
+
+> [!CAUTION]
+> This system starts a **fuel-burning heater** and a **generator** remotely and on a timer,
+> possibly with nobody present. The wiring in the [hardware guide](docs/HARDWARE.md) describes
+> **one** installation (an older Wallas M26 and a Honda EU70IS) and is **not verified for your
+> equipment**. Before connecting SlaveWallas to a Wallas heater, read the precautions in
+> [Hardware Guide §3](docs/HARDWARE.md#3-wallas-chain): check your heater's own documentation,
+> measure the terminals, keep the heater's safety functions in charge, and test while present.
+>
+> **Use at your own risk.** Provided as is, without warranty of any kind. The authors accept no
+> liability for any damage, injury, loss or fire arising from building, installing or using it.
+> If in doubt, have a qualified installer do or check the installation.
+
 ## Documentation
 
 - [FSD_RemoteStart.md](FSD_RemoteStart.md) — full Functional Specification Document (behaviour, protocols, web UI, pin-level reference).

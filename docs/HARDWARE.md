@@ -1,6 +1,6 @@
 # Hardware Guide — RemoteStart
 
-**Version:** 1.1 — 2026-10-11 (Wallas heater terminals and SlaveWallas relay-module wiring, §3.1–3.2)
+**Version:** 1.2 — 2026-10-11 (safety precautions and disclaimer for connecting SlaveWallas to a heater, §3)
 
 This document covers the **physical/electrical** side of the system: what each unit is wired
 to, how a start demand travels from the Victron Venus (Raspberry Pi) to the Honda EU7000is
@@ -10,6 +10,11 @@ the boards currently installed.
 Firmware behaviour, protocols and the web UI are in [FSD_RemoteStart.md](../FSD_RemoteStart.md).
 Where this guide and the FSD disagree about a pin, **this guide reflects a reading taken from
 the live hardware** and the FSD is the one to correct.
+
+> [!CAUTION]
+> **Connecting anything here to a Wallas heater or a Honda generator is done at your own risk.**
+> The wiring describes this one installation and is **not verified for your equipment**. Read the
+> warning and disclaimer at the start of [§3](#3-wallas-chain) before wiring SlaveWallas to a heater.
 
 ## 0. Drawings
 
@@ -203,6 +208,47 @@ times).
 
 ## 3. Wallas chain
 
+> [!CAUTION]
+> ## ⚠️ READ THIS BEFORE CONNECTING SLAVEWALLAS TO A WALLAS HEATER ⚠️
+>
+> **A Wallas heater is a fuel-burning appliance.** Starting it remotely, or at the wrong time,
+> can cause **fire, carbon-monoxide poisoning, damage to the heater, or a flat battery** — on a
+> boat or caravan, possibly with nobody aboard.
+>
+> **The wiring in §3.1–3.2 is NOT verified for your heater.** It describes *one* installation:
+> an **older Wallas M26**, worked out from a third-party wiring drawing for a different
+> controller ("A2" unit), not from Wallas documentation. Your heater may be a different model
+> or revision, may have been modified, or may use the same terminal numbers for something else.
+>
+> **Before you connect anything, check that it is acceptable to do it as described:**
+>
+> 1. **Get the documentation for your own heater** — the Wallas installation manual for your
+>    model, or ask a Wallas dealer / qualified installer — and confirm that joining terminals
+>    **4 and 5** is a permitted way to start it, and that terminal 5 may supply a small external
+>    load (the relay board, about 1 W).
+> 2. **Measure it.** With a multimeter, confirm terminal 6 is 12 V negative, terminal 5 is +12 V
+>    to it, and that 5 is live with the heater off. Do not rely on wire colours or on this guide.
+> 3. **Make sure the heater's own safety functions stay in charge** — overheat cut-out, flame
+>    monitoring, ventilation and exhaust. This system only replaces a manual on/off switch; it must
+>    never bypass or override anything the heater does to protect itself.
+> 4. **Fuse the feed** to the relay board, use **≥ 0.7 mm²** wire on terminals 4–5, and use the
+>    relay's **NO** contact, so a failed or unpowered board leaves the heater **off**.
+> 5. **Test on the bench first** (USB power, nothing on the relay), then **test at the heater
+>    while you are present**: start, stop, MasterRemote unplugged (standalone), power cut. Watch
+>    that the heater stops every time it should.
+> 6. **Remote and timer starts happen when nobody is watching.** Only use them if the heater is
+>    installed so that it is safe to run unattended, per its manual and local rules.
+>
+> If any of this cannot be confirmed — **do not connect it.**
+>
+> **DISCLAIMER — USE AT YOUR OWN RISK.** This project, its firmware and this documentation are
+> provided **as is, without any warranty** of any kind, including fitness for a particular
+> purpose. Connecting SlaveWallas (or any part of this system) to a heater, generator or other
+> equipment is done **entirely at your own risk and responsibility**. The authors and
+> contributors accept **no liability** for any damage, injury, loss, fire, voided warranty or
+> insurance consequence arising from building, installing or using it. If in doubt, have the
+> installation done or checked by a qualified installer.
+
 Same front end, different back end: MasterRemote's `g_wallas_start_cmd` is sent over ESP-NOW to
 **SlaveWallas** (ESP32-C6), which drives a single relay.
 
@@ -247,6 +293,10 @@ The drawing's notes, translated:
   to the level set on the heater's own knob when the temperature falls.
 
 ### 3.2 SlaveWallas board and wiring
+
+> [!WARNING]
+> **Unverified for your heater — read the precautions and disclaimer at the start of §3 first.**
+> Check your own heater's documentation and measure before connecting. At your own risk.
 
 Planned board: an **ESP32-C6 single-relay module**
 ([photo](hardware/SlaveWallas_ESP32-C6_relay_module.png)) — DC 5–60 V supply terminal, Type-C
