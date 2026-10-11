@@ -49,6 +49,7 @@
 #include "esp_event.h"
 #include "esp_now.h"
 #include "esp_netif.h"
+#include "mdns.h"
 #include "esp_mac.h"
 #include "esp_timer.h"
 #include "nvs_flash.h"
@@ -286,11 +287,27 @@ static void start_config_portal(void) {
 /* Returns true if WiFi connected normally. Returns false (WiFi driver left
  * started, but not associated) when connect failed with existing credentials
  * — caller falls back to the ESP-NOW channel scan instead of the portal. */
+/* http://espnowrelay.local/ (v1.61): the unit answers on a fixed name, so
+ * nobody has to find its DHCP address after setup -- the portal's Saved!
+ * page redirects there by itself. Best-effort: a failure never blocks
+ * bring-up. mDNS is same-subnet only; other subnets still need the IP. */
+static void start_mdns(void)
+{
+    esp_err_t err = mdns_init();
+    if (err != ESP_OK) { ESP_LOGW(TAG, "mdns_init: %s", esp_err_to_name(err)); return; }
+    mdns_hostname_set(MDNS_HOSTNAME);
+    mdns_instance_name_set(FIRMWARE_NAME);
+    mdns_service_add(NULL, "_http", "_tcp", 80, NULL, 0);
+    ESP_LOGI(TAG, "mDNS: http://%s.local/", MDNS_HOSTNAME);
+}
+
 static bool wifi_init_and_connect(void) {
     s_wifi_eg = xEventGroupCreate();
     esp_netif_init();
     esp_event_loop_create_default();
     esp_netif_t *sta_netif = esp_netif_create_default_wifi_sta();
+    /* Router client lists show this name -- must be set before DHCP starts. */
+    esp_netif_set_hostname(sta_netif, MDNS_HOSTNAME);
     wifi_init_config_t cfg = WIFI_INIT_CONFIG_DEFAULT();
     esp_wifi_init(&cfg);
     esp_wifi_set_mode(WIFI_MODE_STA);   /* own factory MAC, never overridden */
@@ -306,6 +323,7 @@ static bool wifi_init_and_connect(void) {
         strlcpy((char*)sta.sta.password, pass, sizeof(sta.sta.password));
         esp_wifi_set_config(WIFI_IF_STA, &sta);
         apply_static_ip(sta_netif);
+        start_mdns();
         esp_wifi_start();
         /* Default modem-sleep power save adds real latency to HTTP over WiFi
          * (radio sleeps between beacons, only wakes at DTIM intervals) — mains/

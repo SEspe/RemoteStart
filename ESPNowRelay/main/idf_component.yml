@@ -4,3 +4,5 @@ dependencies:
     version: '>=5.0.0'
   espressif/cjson:
     version: '*'
+  espressif/mdns:
+    version: "^1.0.0"

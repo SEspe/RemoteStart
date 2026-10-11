@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.60  
+**Version:** 1.61  
 **Author:** SEspe  
 **Date:** 2026-10-11  
 
@@ -273,18 +273,21 @@ On first power-up — or any boot where NVS has no stored WiFi credentials at al
 1. Power on the unit (fresh flash or after NVS erase).
 2. The unit starts a WiFi access point:
 
-   | Unit         | AP Name              | Password    |
-   |--------------|----------------------|-------------|
-   | MasterRemote  | `MasterRemote-Config` | `honda1234` |
-   | SlaveHonda   | `SlaveHonda-Config`  | `honda1234` |
-   | SlaveWallas  | `SlaveWallas-Config` | `honda1234` |
+   | Unit         | AP Name              | Password    | Address after setup |
+   |--------------|----------------------|-------------|---------------------|
+   | MasterRemote  | `MasterRemote-Config` | `honda1234` | `http://masterremote.local` |
+   | SlaveHonda   | `SlaveHonda-Config`  | `honda1234` | `http://slavehonda.local` |
+   | SlaveWallas  | `SlaveWallas-Config` | `honda1234` | `http://slavewallas.local` |
+   | ESPNowRelay  | `ESPNowRelay-Config` | `honda1234` | `http://espnowrelay.local` |
 
 3. Connect a smartphone or laptop to that AP.
-4. Navigate to `http://192.168.4.1/wifi-setup`.
+4. Navigate to `http://192.168.4.1/wifi-setup` **in a normal browser tab** (a phone's automatic "sign in to network" window closes when the AP disappears, so it cannot follow the redirect in step 7).
 5. Tap **Scan Networks** to list nearby SSIDs (signal strength + lock icon for secured networks), or type the SSID manually. Tapping a result fills in the SSID field.
-6. Enter the WiFi password (if required) and submit the form.
-7. Credentials are written to NVS (`esp_err_t nvs_set_str()`), and the unit reboots.
+6. Enter the WiFi password (if required) and submit the form. A note under the button says where the page will go next.
+7. Credentials are written to NVS (`esp_err_t nvs_set_str()`), and the unit reboots. The **Saved!** page then polls `http://<unit>.local/api/version` every 2 s (3 s timeout each, from 6 s after saving, up to ~90 s) and **redirects to `http://<unit>.local/` by itself** once the unit answers on the home network. If it never does, the page keeps the manual fallback: the `.local` link, the router's client list (look for the hostname), and — for the slaves — MasterRemote's Nodes tab. The same page follows a save on the WiFi tab and the IP Configuration card.
 8. On subsequent boots the unit reads credentials from NVS and connects directly in STA mode.
+
+**Fixed names (v1.61).** Every unit sets its **DHCP hostname** (`esp_netif_set_hostname`, before DHCP starts) and announces itself over **mDNS** (`espressif/mdns` managed component, `_http._tcp` on port 80) as `MDNS_HOSTNAME` from `main/version.h` — `masterremote`, `slavehonda`, `slavewallas`, `espnowrelay`. mDNS is best-effort (a failed `mdns_init()` is logged and ignored) and **same-subnet only**: a client on another subnet, behind a router hop, still needs the IP. Two units of the same kind on one subnet would collide; the mDNS component then renames the second (e.g. `slavewallas-2`). A SlaveHonda in ESP-NOW fallback has no IP, so its name does not resolve.
 
 > **Important:** All three units must connect to the **same** WiFi network so they share a channel for ESP-NOW.
 

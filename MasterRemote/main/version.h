@@ -1,7 +1,8 @@
 #pragma once
 
-#define FIRMWARE_VERSION    "1.8.2"
+#define FIRMWARE_VERSION    "1.9.0"
 #define FIRMWARE_NAME       "MasterRemote"
+#define MDNS_HOSTNAME       "masterremote"   /* http://masterremote.local/ and the DHCP hostname */
 #define WIFI_AP_SSID        "MasterRemote-Config"
 #define WIFI_AP_PASSWORD    "honda1234"
 #define NVS_NAMESPACE       "mhonda"   /* deliberately unchanged by the MasterHonda->MasterRemote rename, so the already-deployed unit keeps its stored WiFi credentials */

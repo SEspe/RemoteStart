@@ -56,10 +56,13 @@ control terminals have no running signal (Hardware Guide §3.2) — so that dot 
 
 ## First Startup
 
-1. Power on the unit
-2. Connect to its config AP (e.g. `MasterRemote-Config`, password `honda1234`)
-3. Navigate to `http://192.168.4.1/wifi-setup`, scan or type your WiFi credentials
-4. The unit reboots and connects to your network
+1. Power on the unit (a freshly flashed board starts here automatically — see [Build & Flash](#build--flash)).
+2. Connect your phone or PC to its config WiFi, e.g. `SlaveWallas-Config`, password `honda1234`.
+3. Open `http://192.168.4.1/wifi-setup` **in a normal browser tab** — not the phone's automatic "sign in to network" pop-up, which closes when the unit restarts.
+4. Tap **Scan Networks**, pick your WiFi (or type it), enter the password, and press **Connect & Save**.
+5. The unit restarts on your WiFi. Let your phone or PC rejoin your home WiFi and **leave the page open: it moves on to the unit by itself** — `http://slavewallas.local`, `http://masterremote.local`, `http://slavehonda.local` or `http://espnowrelay.local`.
+
+If the page doesn't move on within a minute or two, open that `.local` address yourself. If that doesn't work either (an older Android phone, or a PC on a different subnet), look for the unit's name in your router's client list, or — for a slave — on MasterRemote's **Nodes** tab, which links each slave's IP. A fixed address can then be set on the unit's **WiFi** tab.
 
 MasterRemote and SlaveWallas require WiFi. SlaveHonda prefers it but can operate WiFi-less over ESP-NOW.
 

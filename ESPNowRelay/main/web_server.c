@@ -141,6 +141,7 @@ static const char WIFI_SETUP_HTML[] =
 "<label>Password</label>"
 "<input name='pass' type='password' placeholder='leave blank if open'>"
 "<button class='btn btn-c' type='submit'>Connect &amp; Save</button>"
+"<p style='font-size:.8rem;color:#e9b400;margin-top:12px;line-height:1.4'>After saving, the unit restarts on your WiFi and this page takes you to <b>http://" MDNS_HOSTNAME ".local</b> by itself. Keep this tab open and let this phone or PC rejoin your home WiFi. (In a phone's automatic &quot;sign in to network&quot; window this can't work &mdash; open 192.168.4.1 in a normal browser instead.)</p>"
 "</form>"
 "<script>"
 "function esc(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;');}"
@@ -262,6 +263,7 @@ static const char INDEX_HTML[] =
 "<label class='wf-lbl'>Password</label>"
 "<input class='wf-in' name='pass' type='password' placeholder='leave blank if open'>"
 "<br><button class='wf-btn wf-btn-c' type='submit'>Connect &amp; Save</button>"
+"<p class='wf-warn'>After saving, the unit restarts and this page moves on to <b>http://" MDNS_HOSTNAME ".local</b> by itself.</p>"
 "</form></div>"
 "<div class='card'><h3>IP Configuration</h3>"
 "<div class='grid' id='ipLive'>…</div>"
@@ -279,6 +281,7 @@ static const char INDEX_HTML[] =
 "<p class='wf-warn'>Saving reboots the device to apply. If a static IP is unreachable afterward, "
 "recover over USB (erase NVS to restore DHCP).</p>"
 "<button class='wf-btn wf-btn-c' type='submit'>Save &amp; Apply</button>"
+"<p class='wf-warn'>After saving, the unit restarts and this page moves on to <b>http://" MDNS_HOSTNAME ".local</b> by itself.</p>"
 "</form></div>"
 "<div class='card'><h3>Device</h3>"
 "<p class='wf-warn'>Rebooting drops the WiFi/ESP-NOW link briefly and clears in-memory state "
@@ -693,6 +696,30 @@ static void url_decode(char *s)
     *o = '\0';
 }
 
+/* Shown after a WiFi or IP-settings save (v1.61). The unit reboots onto the
+ * home network at an address the browser doesn't know; this page polls the
+ * unit's mDNS name and moves there by itself once it answers. mDNS works only
+ * on the same subnet, so the manual fallback stays on the page. */
+#define SAVED_PAGE(msg) \
+"<!DOCTYPE html><html><head><meta name='viewport' content='width=device-width,initial-scale=1'></head>" \
+"<body style='font-family:Arial;background:#1a1a2e;color:#eee;display:flex;justify-content:center;" \
+"align-items:center;min-height:100vh;margin:0'>" \
+"<div style='text-align:center;max-width:440px;padding:0 16px'><h2 style='color:#e94560'>Saved!</h2>" \
+"<p>" msg "</p>" \
+"<p id='st' style='color:#e9b400'>Waiting for the unit at <b>http://" MDNS_HOSTNAME ".local</b>&hellip;</p>" \
+"<p style='font-size:.85rem;color:#aaa'>Make sure this phone or PC is back on your home WiFi; " \
+"this page moves on by itself when the unit answers. If it doesn't, open " \
+"<a style='color:#4ea8ff' href='http://" MDNS_HOSTNAME ".local/'>http://" MDNS_HOSTNAME ".local</a>, " \
+"or look for <b>" MDNS_HOSTNAME "</b> in your router's client list, or on MasterRemote's <b>Nodes</b> tab.</p></div>" \
+"<script>var H='http://" MDNS_HOSTNAME ".local/',n=0;" \
+"function p(){var c=new AbortController(),t=setTimeout(function(){c.abort();},3000);" \
+"fetch(H+'api/version',{mode:'no-cors',cache:'no-store',signal:c.signal})" \
+".then(function(){clearTimeout(t);document.getElementById('st').textContent='Found it \\u2014 opening\\u2026';" \
+"location.href=H;})" \
+".catch(function(){clearTimeout(t);if(++n<45)setTimeout(p,2000);else " \
+"document.getElementById('st').textContent='No answer at http://" MDNS_HOSTNAME ".local yet \\u2014 see below.';});}" \
+"setTimeout(p,6000);</script></body></html>"
+
 static esp_err_t h_wifi_save(httpd_req_t *req)
 {
     char body[256]={0};
@@ -704,11 +731,7 @@ static esp_err_t h_wifi_save(httpd_req_t *req)
     url_decode(g_new_ssid);
     url_decode(g_new_pass);
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req,
-        "<!DOCTYPE html><html><body style='font-family:Arial;background:#1a1a2e;color:#eee;"
-        "display:flex;justify-content:center;align-items:center;min-height:100vh'>"
-        "<div style='text-align:center'><h2 style='color:#e94560'>Saved!</h2>"
-        "<p>Connecting and rebooting…</p></div></body></html>");
+    httpd_resp_sendstr(req, SAVED_PAGE("Connecting to your WiFi and rebooting&hellip;"));
     g_wifi_save_requested = true;
     return ESP_OK;
 }
@@ -1349,11 +1372,7 @@ static esp_err_t h_ipcfg_save(httpd_req_t *req)
     strlcpy(g_ipcfg_dns,  dns,  sizeof(g_ipcfg_dns));
 
     httpd_resp_set_type(req, "text/html");
-    httpd_resp_sendstr(req,
-        "<!DOCTYPE html><html><body style='font-family:Arial;background:#1a1a2e;color:#eee;"
-        "display:flex;justify-content:center;align-items:center;min-height:100vh'>"
-        "<div style='text-align:center'><h2 style='color:#e94560'>Saved!</h2>"
-        "<p>Applying network settings and rebooting…</p></div></body></html>");
+    httpd_resp_sendstr(req, SAVED_PAGE("Applying network settings and rebooting&hellip;"));
     g_ipcfg_save_requested = true;
     return ESP_OK;
 }
