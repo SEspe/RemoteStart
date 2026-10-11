@@ -129,6 +129,70 @@ int64_t  g_heap_min_ts_us = 0;
  * the clock has synced (see NTP_MIN_VALID_EPOCH) -- see FSD §3.2/§12. */
 volatile bool g_timer_wallas_start = false;
 
+/* ── Physical input enable mask ─────────────────────────────────────────────
+ * One bit per GPIO command source; a cleared bit makes that pin contribute
+ * nothing to its command, whatever level it reads. For a unit with an input
+ * left unwired (a test bench, or a switch not fitted) -- an open manual-switch
+ * input reads as "On" by design of the wiring (§2.2). All enabled by default;
+ * persisted as NVS u8 "inen". Web/timer sources are not maskable here. */
+#define IN_EN_HONDA_START    (1u << 0)   /* GPIO15, Victron relay  */
+#define IN_EN_HONDA_MANUAL   (1u << 1)   /* GPIO14, manual switch  */
+#define IN_EN_WALLAS_START   (1u << 2)   /* GPIO4,  Victron relay  */
+#define IN_EN_WALLAS_MANUAL  (1u << 3)   /* GPIO5,  manual switch  */
+#define IN_EN_ALL            0x0Fu
+volatile uint8_t g_input_enable = IN_EN_ALL;
+
+/* The one place each combined command is computed: every recompute site (both
+ * ISRs, gpio_init's boot read, timer_task, the web stop handlers, an enable-
+ * mask change) calls these, so the OR of all sources can't drift between
+ * sites again (§3.2 recompute bug class). IRAM because the ISRs call them.
+ * GPIO15/GPIO4 are active LOW (opto open collector); GPIO14/GPIO5 read
+ * non-inverted (the switch grounds the pin when Off). */
+bool IRAM_ATTR honda_cmd_compute(void)
+{
+    uint8_t en = g_input_enable;
+    return ((en & IN_EN_HONDA_START)  && !gpio_get_level(PIN_HONDA_START)) ||
+           ((en & IN_EN_HONDA_MANUAL) &&  gpio_get_level(PIN_HONDA_MANUAL_START)) ||
+           g_web_honda_start;
+}
+
+bool IRAM_ATTR wallas_cmd_compute(void)
+{
+    uint8_t en = g_input_enable;
+    return ((en & IN_EN_WALLAS_START)  && !gpio_get_level(PIN_WALLAS_START)) ||
+           ((en & IN_EN_WALLAS_MANUAL) &&  gpio_get_level(PIN_WALLAS_MANUAL_START)) ||
+           g_web_wallas_start || g_timer_wallas_start;
+}
+
+static void input_enable_load(void)
+{
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READONLY, &h) != ESP_OK) return;   /* keep default: all enabled */
+    uint8_t v = IN_EN_ALL;
+    if (nvs_get_u8(h, "inen", &v) == ESP_OK) g_input_enable = v & IN_EN_ALL;
+    nvs_close(h);
+}
+
+/* Called by web_server.c's /api/inputs/set. Saves, then recomputes both
+ * commands at once so a disabled pin's demand drops without waiting for a
+ * GPIO edge; a Honda change is force-sent, as the web stop button does. */
+void input_enable_set(uint8_t mask)
+{
+    g_input_enable = mask & IN_EN_ALL;
+    nvs_handle_t h;
+    if (nvs_open(NVS_NAMESPACE, NVS_READWRITE, &h) == ESP_OK) {
+        nvs_set_u8(h, "inen", g_input_enable);
+        nvs_commit(h);
+        nvs_close(h);
+    }
+    bool honda = honda_cmd_compute();
+    if (honda != g_honda_start_cmd) {
+        g_honda_start_cmd  = honda;
+        g_honda_force_send = true;
+    }
+    g_wallas_start_cmd = wallas_cmd_compute();
+}
+
 #define NTP_MIN_VALID_EPOCH  1704067200   /* 2024-01-01 UTC -- sanity floor so an
                                             * unsynced clock (epoch ~1970) can never
                                             * be mistaken for a real time-of-day match */
@@ -239,9 +303,7 @@ static void timer_task(void *arg)
          * a plain clock tick is. Recompute it here too, or a schedule
          * boundary would silently never take effect (same class of bug as
          * the Honda force-send fix, §12). */
-        g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
-                               gpio_get_level(PIN_WALLAS_MANUAL_START) ||
-                               g_web_wallas_start || g_timer_wallas_start);
+        g_wallas_start_cmd = wallas_cmd_compute();
 
         uint32_t cur_heap = esp_get_free_heap_size();
         if (cur_heap < g_heap_min) { g_heap_min = cur_heap; g_heap_min_ts_us = esp_timer_get_time(); }
@@ -630,7 +692,7 @@ static void send_to_honda(void)
     master_msg_t msg = {0};
     strlcpy(msg.label, "Master->SlaveHonda", sizeof(msg.label));
     msg.HondaRunningFB  = g_slave_honda_running;
-    msg.HondaIgnitionOn = gpio_get_level(PIN_HONDA_MANUAL_START);
+    msg.HondaIgnitionOn = (g_input_enable & IN_EN_HONDA_MANUAL) && gpio_get_level(PIN_HONDA_MANUAL_START);
     msg.HondaStart      = g_honda_start_cmd;
     esp_now_send(g_slave_honda.mac, (uint8_t *)&msg, sizeof(msg));
     vTaskDelay(pdMS_TO_TICKS(20));
@@ -657,8 +719,7 @@ static void send_to_wallas(void)
  * expressions as h_honda_stop/h_wallas_stop/timer_task recomputes. */
 static void IRAM_ATTR isr_honda_recompute(void *arg)
 {
-    g_honda_start_cmd = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
-                         !gpio_get_level(PIN_HONDA_START) || g_web_honda_start);
+    g_honda_start_cmd = honda_cmd_compute();
 }
 /* PIN_WALLAS_START (GPIO4) reads inverted on this hardware revision (LOW =
  * Victron demanding start) -- opposite of PIN_HONDA_START's polarity, and
@@ -673,9 +734,7 @@ static void IRAM_ATTR isr_honda_recompute(void *arg)
  * (other sources can still keep Wallas running). */
 static void IRAM_ATTR isr_wallas_recompute(void *arg)
 {
-    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
-                          gpio_get_level(PIN_WALLAS_MANUAL_START) ||
-                          g_web_wallas_start || g_timer_wallas_start);
+    g_wallas_start_cmd = wallas_cmd_compute();
 }
 
 static void gpio_init(void)
@@ -694,19 +753,14 @@ static void gpio_init(void)
     gpio_set_level(PIN_HONDA_STARTED_FB, 0);
     gpio_set_level(PIN_STATUS_LED, 0);
 
-    /* Inputs without pull-up (driven by Victron relay) */
-    gpio_config_t in = {
-        .pin_bit_mask = (1ULL << PIN_HONDA_START) | (1ULL << PIN_WALLAS_START),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
-        .pull_down_en = GPIO_PULLDOWN_DISABLE,
-        .intr_type    = GPIO_INTR_ANYEDGE,
-    };
-    gpio_config(&in);
-
-    /* Inputs with internal pull-up (manual push buttons) */
+    /* All four inputs with internal pull-up. The Victron inputs (GPIO15/GPIO4)
+     * also have the interface board's external 10 k pull-up and are pulled LOW
+     * by the opto when active; the internal one is what makes an unconnected
+     * pin (board absent, broken wire) read HIGH = idle instead of floating LOW
+     * = start demand (v1.55). The manual switches ground their pin when Off. */
     gpio_config_t in_pu = {
-        .pin_bit_mask = (1ULL << PIN_HONDA_MANUAL_START) | (1ULL << PIN_WALLAS_MANUAL_START),
+        .pin_bit_mask = (1ULL << PIN_HONDA_START) | (1ULL << PIN_WALLAS_START) |
+                        (1ULL << PIN_HONDA_MANUAL_START) | (1ULL << PIN_WALLAS_MANUAL_START),
         .mode         = GPIO_MODE_INPUT,
         .pull_up_en   = GPIO_PULLUP_ENABLE,
         .pull_down_en = GPIO_PULLDOWN_DISABLE,
@@ -714,12 +768,11 @@ static void gpio_init(void)
     };
     gpio_config(&in_pu);
 
-    /* Read initial states -- full OR of all boot-time sources, same
-     * expressions as the ISRs (web/timer sources are always false here) */
-    g_honda_start_cmd  = (gpio_get_level(PIN_HONDA_MANUAL_START) ||
-                          !gpio_get_level(PIN_HONDA_START));
-    g_wallas_start_cmd = (!gpio_get_level(PIN_WALLAS_START) ||
-                          gpio_get_level(PIN_WALLAS_MANUAL_START));
+    /* Read initial states -- same compute as every other site (web/timer
+     * sources are always false here) */
+    input_enable_load();
+    g_honda_start_cmd  = honda_cmd_compute();
+    g_wallas_start_cmd = wallas_cmd_compute();
 
     gpio_install_isr_service(ESP_INTR_FLAG_IRAM);
     gpio_isr_handler_add(PIN_HONDA_START,         isr_honda_recompute,  NULL);

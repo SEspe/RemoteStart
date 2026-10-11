@@ -124,12 +124,15 @@ Polarity, and this is the part that is easy to get backwards:
 | idle | dark | off | pull-up holds it **HIGH** | idle |
 
 So both Victron inputs are **active LOW at the ESP32** and read inverted in firmware
-(`!gpio_get_level(...)`), while being active *high* on the Venus side. The internal pull-ups on
-GPIO4/GPIO15 are deliberately **disabled** in `gpio_init()` — R2/R5 are doing that job.
+(`!gpio_get_level(...)`), while being active *high* on the Venus side. R2/R5 are the pull-ups.
+Since firmware 1.7.0 (FSD v1.55) the internal pull-ups on GPIO4/GPIO15 are **enabled** as well,
+so that with this board absent or a wire broken the pin reads HIGH = idle instead of floating LOW,
+which reads as a start demand. The opto still pulls the pin LOW easily against both.
 
-> Verified live on 2026-08-10 with the system idle: GPIO4 = 1 and GPIO15 = 1 despite their
-> internal pull-ups being disabled, which is only possible with the external pull-ups present;
-> `/api/status` correspondingly reported `pHS:false`, `pWS:false`.
+> Verified live on 2026-08-10 (firmware 1.6.15, internal pull-ups then disabled) with the system
+> idle: GPIO4 = 1 and GPIO15 = 1, which proved the external pull-ups are fitted. On 2026-10-11 a
+> bare test board with nothing connected read GPIO4 = GPIO15 = 0 on 1.6.15 (both start commands
+> on) and 1 on 1.7.0 (both idle).
 
 ### 2.3 Manual switches
 
@@ -137,6 +140,10 @@ Both manual switches are **maintained on/off toggles, not momentary buttons**, a
 wired so that the **switch grounds its pin in the Off position** and releases it (internal
 pull-up → HIGH) when switched On. Firmware therefore reads them **non-inverted**, with
 `GPIO_PULLUP_ENABLE`.
+
+> **Not fail-safe:** a broken wire or an unconnected switch reads the same as **On**. If a switch
+> is not fitted, untick it under **Debug → Input Sources** (FSD §2.2). The wiring fix is to move
+> each switch to its other contact (ground = On) and read it inverted.
 
 | Switch | Terminal | ESP32 pin | Off | On |
 |--------|----------|-----------|-----|-----|
@@ -180,11 +187,11 @@ firmware 1.6.15) on **2026-08-10**, system fully idle:
 | GPIO | Direction | Signal | Pull | Active | Idle level | API field |
 |------|-----------|--------|------|--------|-----------|-----------|
 | 2 | INPUT_OUTPUT | Onboard heartbeat LED | — | — | 1 | — |
-| 4 | INPUT | Wallas start — Venus via U2 | external 10 kΩ (R5) | **LOW** | 1 | `pWS` = false |
+| 4 | INPUT | Wallas start — Venus via U2 | external 10 kΩ (R5) + internal (1.7.0) | **LOW** | 1 | `pWS` = false |
 | 5 | INPUT | Wallas manual switch | internal pull-up | **HIGH** | 0 | `pWM` = false |
 | 13 | INPUT_OUTPUT | Honda-running LED (LED1) | — | HIGH = lit | 0 | `pFB` = false |
 | 14 | INPUT | Honda manual switch (S1) | internal pull-up | **HIGH** | 0 | `pHM` = false |
-| 15 | INPUT | Honda start — Venus via U1 | external 10 kΩ (R2) | **LOW** | 1 | `pHS` = false |
+| 15 | INPUT | Honda start — Venus via U1 | external 10 kΩ (R2) + internal (1.7.0) | **LOW** | 1 | `pHS` = false |
 
 All four inputs carry `GPIO_INTR_ANYEDGE` interrupts. Both ISRs recompute their command from
 **every** OR-source, never a subset — see FSD §12 for why (this bug class has appeared three

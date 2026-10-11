@@ -40,6 +40,10 @@ extern volatile bool g_web_wallas_start;
 extern volatile bool g_honda_force_send;
 extern volatile bool g_timer_wallas_start;
 extern          bool g_slave_honda_running;
+extern volatile uint8_t g_input_enable;
+extern bool honda_cmd_compute(void);
+extern bool wallas_cmd_compute(void);
+extern void input_enable_set(uint8_t mask);
 
 /* Weekly Wallas timer accessors (function interface, see main.c) */
 extern void timer_get_day(int day, bool *enabled, int *start_hh, int *start_mm, int *stop_hh, int *stop_mm);
@@ -322,6 +326,18 @@ static const char INDEX_HTML_TMPL[] =
 "<div id='debug' class='pane'>"
 "<div class='card'><h3>WiFi Link</h3><div class='grid' id='wifi'>…</div></div>"
 "<div class='card'><h3>System</h3><div class='grid' id='sys'>…</div></div>"
+"<div class='card'><h3>Input Sources</h3>"
+"<p class='wf-warn'>Untick an input that is not wired. An unwired manual-switch "
+"input reads as <b>On</b>, so it would demand a start. A disabled input still "
+"shows its pin on Pin Status but no longer starts anything. Saved on the unit.</p>"
+"<div class='grid'>"
+"<div class='row'><span>Honda Start &mdash; Victron (GPIO15)</span><input type='checkbox' id='ie0' onchange='ieDirty()'></div>"
+"<div class='row'><span>Honda Manual switch (GPIO14)</span><input type='checkbox' id='ie1' onchange='ieDirty()'></div>"
+"<div class='row'><span>Wallas Start &mdash; Victron (GPIO4)</span><input type='checkbox' id='ie2' onchange='ieDirty()'></div>"
+"<div class='row'><span>Wallas Manual switch (GPIO5)</span><input type='checkbox' id='ie3' onchange='ieDirty()'></div>"
+"</div>"
+"<div class='ctl'><button class='go go-on' id='ieSetBtn' onclick='ieSave()' disabled>Set</button></div>"
+"</div>"
 "<div class='card'><h3>Manual GPIO Test</h3>"
 "<p class='wf-warn'>Hardware bring-up only. Every GPIO's live level is shown as a "
 "dot (green = HIGH). Pins with ON/OFF buttons can be forced to OUTPUT and "
@@ -480,11 +496,23 @@ static const char INDEX_HTML_TMPL[] =
 "const sp=document.getElementById('tsp'+d).value||'00:00';"
 "ps.push(fetch('/api/timer/set?day='+d+'&enabled='+en+'&start='+st+'&stop='+sp,{method:'POST'}));}"
 "Promise.all(ps).catch(()=>{btn.disabled=false;});}"
+/* Input Sources card: edits stage locally and commit with one Set button,
+ * like the Weekly Timer; the 2 s status poll refreshes the boxes only while
+ * nothing is staged, so it can't overwrite an edit in progress. */
+"var g_ieDirty=false;"
+"function ieDirty(){g_ieDirty=true;document.getElementById('ieSetBtn').disabled=false;}"
+"function ieSave(){var m=0;for(var i=0;i<4;i++)if(document.getElementById('ie'+i).checked)m|=1<<i;"
+"document.getElementById('ieSetBtn').disabled=true;"
+"fetch('/api/inputs/set?mask='+m,{method:'POST'}).then(function(){g_ieDirty=false;fetchStatus();})"
+".catch(function(){document.getElementById('ieSetBtn').disabled=false;});}"
+"function inLbl(n,on){return on?n:n+' <span class=\"dim\">(disabled)</span>';}"
 "function fetchStatus(){"
 "fetch('/api/status').then(r=>r.json()).then(d=>{"
+"var en=d.inEn;"
+"if(!g_ieDirty)for(var i=0;i<4;i++)document.getElementById('ie'+i).checked=!!(en&(1<<i));"
 "document.getElementById('pins').innerHTML="
-"row('Honda Start (p15)',d.pHS)+row('Honda Manual (p14)',d.pHM)+"
-"row('Wallas Start (p4)',d.pWS)+row('Wallas Manual (p5)',d.pWM)+"
+"row(inLbl('Honda Start (p15)',en&1),d.pHS)+row(inLbl('Honda Manual (p14)',en&2),d.pHM)+"
+"row(inLbl('Wallas Start (p4)',en&4),d.pWS)+row(inLbl('Wallas Manual (p5)',en&8),d.pWM)+"
 "row('Honda FB LED (p13)',d.pFB);"
 "document.getElementById('state').innerHTML="
 "row('Honda Start CMD',d.gHS)+row('Honda Slave Running',d.gHR)+row('Wallas CMD',d.gWS);"
@@ -762,7 +790,7 @@ static esp_err_t h_status(httpd_req_t *req)
     char buf[360];
     snprintf(buf, sizeof(buf),
         "{\"pHS\":%s,\"pHM\":%s,\"pWS\":%s,\"pWM\":%s,\"pFB\":%s,"
-        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"rssi\":%d,\"ch\":%d,\"mac\":\"%s\"}",
+        "\"gHS\":%s,\"gHR\":%s,\"gWS\":%s,\"inEn\":%u,\"rssi\":%d,\"ch\":%d,\"mac\":\"%s\"}",
         !gpio_get_level(PIN_HONDA_START)        ? "true" : "false",
          gpio_get_level(PIN_HONDA_MANUAL_START) ? "true" : "false",
         !gpio_get_level(PIN_WALLAS_START)       ? "true" : "false",   /* inverted on this hardware */
@@ -771,6 +799,7 @@ static esp_err_t h_status(httpd_req_t *req)
         g_honda_start_cmd    ? "true" : "false",
         g_slave_honda_running? "true" : "false",
         g_wallas_start_cmd   ? "true" : "false",
+        (unsigned)g_input_enable,
         (int)ap_info.rssi, (int)ap_info.primary, mac_str);
     httpd_resp_set_type(req, "application/json");
     httpd_resp_sendstr(req, buf);
@@ -867,7 +896,7 @@ static esp_err_t h_honda_start(httpd_req_t *req)
 static esp_err_t h_honda_stop(httpd_req_t *req)
 {
     g_web_honda_start = false;
-    g_honda_start_cmd = gpio_get_level(PIN_HONDA_MANUAL_START) || !gpio_get_level(PIN_HONDA_START);
+    g_honda_start_cmd = honda_cmd_compute();
     g_honda_force_send = true;   /* guarantee a send even if last-known state already reads "stopped" */
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
@@ -884,11 +913,30 @@ static esp_err_t h_wallas_start(httpd_req_t *req)
 static esp_err_t h_wallas_stop(httpd_req_t *req)
 {
     g_web_wallas_start = false;
-    /* PIN_WALLAS_START reads inverted, PIN_WALLAS_MANUAL_START non-inverted
-     * on this hardware -- see main.c gpio_init()/isr_wallas_recompute. */
-    g_wallas_start_cmd = !gpio_get_level(PIN_WALLAS_START) ||
-                          gpio_get_level(PIN_WALLAS_MANUAL_START) ||
-                          g_timer_wallas_start;
+    g_wallas_start_cmd = wallas_cmd_compute();
+    httpd_resp_sendstr(req, "OK");
+    return ESP_OK;
+}
+
+/* POST /api/inputs/set?mask=N  ── which physical inputs count as command
+ * sources (bit 0 GPIO15 Honda Victron, 1 GPIO14 Honda manual, 2 GPIO4 Wallas
+ * Victron, 3 GPIO5 Wallas manual). Saved to NVS; read back via /api/status's
+ * inEn. */
+static esp_err_t h_inputs_set(httpd_req_t *req)
+{
+    char query[32] = {0}, mask_str[8] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) != ESP_OK ||
+        httpd_query_key_value(query, "mask", mask_str, sizeof(mask_str)) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "missing mask");
+        return ESP_OK;
+    }
+    char *end;
+    long mask = strtol(mask_str, &end, 10);
+    if (*end != '\0' || mask < 0 || mask > 15) {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "mask must be 0-15");
+        return ESP_OK;
+    }
+    input_enable_set((uint8_t)mask);
     httpd_resp_sendstr(req, "OK");
     return ESP_OK;
 }
@@ -1840,7 +1888,7 @@ esp_err_t web_server_start(void)
 {
     httpd_handle_t server = NULL;
     httpd_config_t cfg = HTTPD_DEFAULT_CONFIG();
-    cfg.max_uri_handlers = 28;   /* headroom above the current route count -- an exact-fit cap
+    cfg.max_uri_handlers = 32;   /* headroom above the current route count -- an exact-fit cap
                                     silently drops routes registered after the limit is hit, and
                                     the registration loop below now logs if that happens (SlaveHonda
                                     hit exactly this in v1.9.0: /ota/upload silently never registered) */
@@ -1877,6 +1925,7 @@ esp_err_t web_server_start(void)
         { .uri="/api/wallas/stop", .method=HTTP_POST, .handler=h_wallas_stop },
         { .uri="/api/timer",       .method=HTTP_GET,  .handler=h_timer_get   },
         { .uri="/api/timer/set",   .method=HTTP_POST, .handler=h_timer_set   },
+        { .uri="/api/inputs/set",  .method=HTTP_POST, .handler=h_inputs_set  },
         { .uri="/wifi-setup",      .method=HTTP_GET,  .handler=h_wifi_setup  },
         { .uri="/wifi-save",       .method=HTTP_POST, .handler=h_wifi_save   },
         { .uri="/api/scan",        .method=HTTP_GET,  .handler=h_scan        },

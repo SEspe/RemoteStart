@@ -1,6 +1,6 @@
 # Functional Specification Document
 ## Remote Start System — Honda EU70IS & Wallas Heater
-**Version:** 1.54  
+**Version:** 1.55  
 **Author:** SEspe  
 **Date:** 2026-10-11  
 
@@ -61,11 +61,13 @@ Each unit uses its own factory MAC address (read via `esp_wifi_get_mac()`; never
 | GPIO | Direction    | Signal                             |
 |------|--------------|------------------------------------|
 |  2   | OUTPUT       | Onboard LED — heartbeat blink      |
-|  4   | INPUT        | Wallas Start — Victron Venus relay (**active LOW**, v1.29 — LOW = start demanded, HIGH = idle), fed from optocoupler U2's open collector with an external 10 kΩ pull-up (R5) to 3V3; the internal pull-up is deliberately disabled |
+|  4   | INPUT        | Wallas Start — Victron Venus relay (**active LOW**, v1.29 — LOW = start demanded, HIGH = idle), fed from optocoupler U2's open collector with an external 10 kΩ pull-up (R5) to 3V3, plus the internal pull-up, so an unconnected pin reads HIGH = idle (v1.55) |
 |  5   | INPUT PULLUP | Wallas Manual Start — maintained on/off toggle switch, **reconnected 2026-07-04 (v1.44)**, active HIGH like GPIO14's Honda manual switch — opposite polarity of GPIO4 (was unwired/obsolete v1.29–v1.43). OR'd into `g_wallas_start_cmd` as a plain level source alongside the Victron relay, web override, and weekly timer |
 | 13   | OUTPUT       | Honda Running Feedback LED         |
 | 14   | INPUT PULLUP | Honda Manual Start (push-button)   |
-| 15   | INPUT        | Honda Start — Victron Venus relay (**active LOW** — LOW = start demanded, HIGH = idle), fed from optocoupler U1's open collector with an external 10 kΩ pull-up to 3V3; the internal pull-up is deliberately disabled. Same polarity as GPIO4's Wallas input. See [Hardware Guide §2.2](docs/HARDWARE.md#22-isolated-inputs-from-the-victron-venus-raspberry-pi) |
+| 15   | INPUT        | Honda Start — Victron Venus relay (**active LOW** — LOW = start demanded, HIGH = idle), fed from optocoupler U1's open collector with an external 10 kΩ pull-up to 3V3, plus the internal pull-up, so an unconnected pin reads HIGH = idle (v1.55). Same polarity as GPIO4's Wallas input. See [Hardware Guide §2.2](docs/HARDWARE.md#22-isolated-inputs-from-the-victron-venus-raspberry-pi) |
+
+**Input enable mask (v1.55).** Each of the four inputs above can be excluded as a command source from the Debug tab's **Input Sources** card (`POST /api/inputs/set`, §6). All four are enabled by default; the mask is saved in NVS as u8 `inen` (bit 0 GPIO15, bit 1 GPIO14, bit 2 GPIO4, bit 3 GPIO5). A disabled input still reports its pin in `/api/status`, but contributes nothing to `g_honda_start_cmd`/`g_wallas_start_cmd`, and a disabled GPIO14 also clears `HondaIgnitionOn` in the Honda message. Use it for an input that is not wired: with the internal pull-ups, an unconnected Victron input already reads idle, but an unconnected **manual-switch** input reads **On**, because the switch grounds its pin when Off. Every recompute site calls one function per command (`honda_cmd_compute()`/`wallas_cmd_compute()` in `main.c`), so the mask applies identically in the ISRs, the boot read, the timer tick and the web stop handlers.
 
 ### 2.3 SlaveHonda Pin Assignments
 
@@ -338,7 +340,7 @@ Access at: `http://<MasterRemote-IP>/`
 | Tab          | Content                                                      | Refresh  |
 |--------------|--------------------------------------------------------------|----------|
 | Pin Status   | Live state of 5 pins + 3 global state flags + manual Start/Stop Honda and Start/Stop Wallas buttons | 2 s auto |
-| Debug (v1.40) | WiFi Link (own MAC v1.42, RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + Manual GPIO Test: live status dot for every GPIO, ON/OFF buttons on the non-reserved subset (v1.48 — note GPIO4/GPIO14 are externally-driven inputs on this unit, safe to read, not safe to drive) | 2 s auto |
+| Debug (v1.40) | WiFi Link (own MAC v1.42, RSSI, channel) + System resource monitor (heap, uptime, WiFi reconnects, §10) + Input Sources: one checkbox per physical input, staged and saved with one **Set** button (v1.55, §2.2) + Manual GPIO Test: live status dot for every GPIO, ON/OFF buttons on the non-reserved subset (v1.48 — note GPIO4/GPIO14 are externally-driven inputs on this unit, safe to read, not safe to drive) | 2 s auto |
 | Nodes        | Table of registered slave nodes (§3.2): role, firmware version, MAC, IP, WiFi, RSSI, channel, connected status, last seen, running status, role-specific detail | 2 s auto |
 | Weekly Timer | NTP clock readout + 7-row table (Sun–Sat): enable checkbox, start `HH:MM`, stop `HH:MM` for the Wallas heater | On tab open + on edit |
 | WiFi (v1.37) | WiFi Network card (configured SSID + associated-AP readout, v1.47; SSID/password form + scan) + IP Configuration card (live address source/IP/mask/gateway/DNS readout, v1.47; DHCP/Static IP radio, IP/mask/gateway/DNS fields) | On tab open |
@@ -374,6 +376,7 @@ HTTP endpoints:
 | POST   | `/api/wallas/stop`  | Clear override; recompute from GPIO + timer |
 | GET    | `/api/timer`        | JSON: current clock + all 7 days' timer config |
 | POST   | `/api/timer/set`    | Save one day: `?day=0-6&enabled=0\|1&start=HH:MM&stop=HH:MM` |
+| POST   | `/api/inputs/set`   | Input enable mask, `?mask=0-15` (bit 0 GPIO15, 1 GPIO14, 2 GPIO4, 3 GPIO5); saved to NVS, recomputes both commands at once; 400 outside 0–15 (v1.55, §2.2) |
 | GET    | `/wifi-setup`       | WiFi credential form (portal page; also embedded in the WiFi tab, v1.37) |
 | GET    | `/api/scan`         | JSON array of nearby networks          |
 | GET    | `/api/gpio/set`     | DEBUG: force a non-reserved pin to OUTPUT, `?pin=N&level=0\|1` (v1.48) |
@@ -422,10 +425,11 @@ HTTP endpoints on both units: `/`, `/api/status`, `/api/sysinfo` (v1.25, §10), 
   "pHS": false,   "pHM": false,   "pWS": false,
   "pWM": false,   "pFB": false,
   "gHS": false,   "gHR": false,   "gWS": false,
+  "inEn": 15,
   "rssi": -62,    "ch": 1
 }
 ```
-Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running. `rssi` = MasterRemote's WiFi signal strength in dBm (from `esp_wifi_sta_get_ap_info()`); `ch` = its current WiFi/ESP-NOW channel (`wifi_ap_record_t.primary`). Both read 0 if not connected.
+Keys: `p` = pin level, `g` = global state flag; `HS` = Honda Start, `HM` = Honda Manual, `WS` = Wallas Start, `WM` = Wallas Manual, `FB` = Feedback, `HR` = Honda Running. `inEn` = the input enable mask (§2.2); `p` fields show the pin whether or not it is enabled, `g` fields reflect only enabled inputs. `rssi` = MasterRemote's WiFi signal strength in dBm (from `esp_wifi_sta_get_ap_info()`); `ch` = its current WiFi/ESP-NOW channel (`wifi_ap_record_t.primary`). Both read 0 if not connected.
 
 ---
 
