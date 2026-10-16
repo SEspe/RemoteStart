@@ -39,6 +39,11 @@ ESP32-based wireless remote start system for a Honda EU70IS generator and Wallas
 
 ## Screenshots — SlaveWallas
 
+<a href="docs/hardware/SlaveWallas_ESP32-C6_relay_module.png"><img src="docs/hardware/SlaveWallas_ESP32-C6_relay_module.png" alt="ESP32-C6 single relay module (SlaveWallas board)" width="240" align="right"></a>
+
+**The board:** SlaveWallas runs on an ESP32-C6 single-relay module (DC 5–60 V supply, relay on
+GPIO19) — see [Hardware Guide §3.2](docs/HARDWARE.md). Seller's product photo; click to enlarge.
+
 **Status tab, running standalone** (no MasterRemote heard for 30 s): the Mode line says
 *Standalone*, and **Start Wallas / Stop Wallas** drive the heater relay directly. With MasterRemote
 present the same buttons act as MasterRemote's own (FSD §3.5).
